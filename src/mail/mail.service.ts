@@ -18,6 +18,18 @@ interface ReminderEmailParams {
   location: string | null;
 }
 
+interface InviteEmailParams {
+  to: string;
+  eventTitle: string;
+  /** ISO string */
+  startTime: string;
+  location: string | null;
+  /** Link bấm "Đồng ý" — GET, không cần đăng nhập */
+  acceptUrl: string;
+  /** Link bấm "Từ chối" — GET, không cần đăng nhập */
+  declineUrl: string;
+}
+
 @Injectable()
 export class MailService {
   private readonly logger = new Logger(MailService.name);
@@ -59,6 +71,41 @@ export class MailService {
     });
 
     this.logger.log(`Đã gửi email nhắc lịch tới ${params.to} — sự kiện "${params.eventTitle}"`);
+  }
+
+  /** Gửi email MỜI tham gia event, kèm 2 nút Đồng ý/Từ chối bấm ngay trong mail (không cần đăng nhập). */
+  async sendEventInvite(params: InviteEmailParams): Promise<void> {
+    const start = new Date(params.startTime);
+    const timeLabel = start.toLocaleString('vi-VN', {
+      weekday: 'long',
+      day: 'numeric',
+      month: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+    const locationLine = params.location ? `<p style="margin:4px 0">📍 ${params.location}</p>` : '';
+    const button = (url: string, bg: string, label: string) =>
+      `<a href="${url}" style="display:inline-block;padding:10px 22px;margin:4px;border-radius:6px;background:${bg};color:#ffffff;text-decoration:none;font-weight:bold">${label}</a>`;
+
+    await this.transporter.sendMail({
+      from: this.fromAddress,
+      to: params.to,
+      subject: `Lời mời tham gia: ${params.eventTitle}`,
+      text: `Bạn được mời tham gia "${params.eventTitle}" vào ${timeLabel}.\nĐồng ý: ${params.acceptUrl}\nTừ chối: ${params.declineUrl}`,
+      html: `
+        <p>Bạn được mời tham gia sự kiện:</p>
+        <h2 style="margin:4px 0">${params.eventTitle}</h2>
+        <p style="margin:4px 0">🕐 <strong>${timeLabel}</strong></p>
+        ${locationLine}
+        <p style="margin-top:18px">
+          ${button(params.acceptUrl, '#16a34a', '✔ Đồng ý')}
+          ${button(params.declineUrl, '#dc2626', '✘ Từ chối')}
+        </p>
+        <p style="color:#888;font-size:12px;margin-top:16px">Bấm nút để phản hồi ngay, không cần đăng nhập.</p>
+      `,
+    });
+
+    this.logger.log(`Đã gửi email mời tới ${params.to} — sự kiện "${params.eventTitle}"`);
   }
 
   /** Gửi 1 email test đơn giản — chỉ để kiểm tra cấu hình SMTP có hoạt động không. */

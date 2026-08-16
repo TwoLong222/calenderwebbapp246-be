@@ -98,11 +98,14 @@ create table if not exists event_attendees (
   email text not null,
   status attendee_status not null default 'needsAction',
   reminder_sent_at timestamptz,
+  respond_token text,          -- token ngẫu nhiên cho link Đồng ý/Từ chối trong email
+  token_expires_at timestamptz, -- hạn dùng token (7 ngày); xóa token sau khi phản hồi 1 lần
   unique (event_id, email)
 );
--- Phòng khi bảng đã tồn tại mà thiếu cột reminder_sent_at (đây là nguyên nhân
--- khiến reminder.service.ts fail âm thầm nếu cột chưa có):
+-- Phòng khi bảng đã tồn tại mà thiếu các cột dưới:
 alter table event_attendees add column if not exists reminder_sent_at timestamptz;
+alter table event_attendees add column if not exists respond_token text;
+alter table event_attendees add column if not exists token_expires_at timestamptz;
 
 -- =========================================================================
 -- Auto-tạo Lịch chính khi có user mới đăng ký (nếu không có bước này, user vừa

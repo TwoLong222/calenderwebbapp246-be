@@ -10,10 +10,14 @@
 // getPrimaryCalendarId() thành nhận calendarId từ request thay vì tự suy ra —
 // không cần sửa logic RLS vì đã được thiết kế sẵn từ đầu.
 
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import { randomUUID } from 'crypto';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { CreateEventDto } from './dto/create-event.dto';
 import { UpdateEventDto } from './dto/update-event.dto';
+import { MailService } from '../mail/mail.service';
+import { SupabaseService } from '../supabase/supabase.service';
 
 export interface ConflictRow {
   id: string;
@@ -22,8 +26,22 @@ export interface ConflictRow {
   end_time: string;
 }
 
+interface InviteContext {
+  title: string;
+  startTime: string;
+  location: string | null;
+}
+
 @Injectable()
 export class EventsService {
+  private readonly logger = new Logger(EventsService.name);
+
+  constructor(
+    private readonly mail: MailService,
+    private readonly supabaseService: SupabaseService,
+    private readonly config: ConfigService,
+  ) {}
+
   private async getPrimaryCalendarId(supabase: SupabaseClient): Promise<string> {
     const { data, error } = await supabase.from('calendars').select('id').eq('is_primary', true).single();
 
@@ -105,17 +123,25 @@ export class EventsService {
     const { data: events, error } = await supabase.from('events').insert(rows).select();
     if (error) throw error;
 
-    // Gán khách mời cho TẤT CẢ các lần lặp
-    if (dto.guestEmails?.length) {
-      for (const ev of events) {
-        await this.syncAttendees(supabase, ev.id, dto.guestEmails);
-      }
-    }
-
-    // Trả về lần sớm nhất (event gốc) để frontend hiển thị ngay
+    // Lần sớm nhất (event gốc) — trả về cho frontend + là nơi gửi email mời (tránh spam N lần)
     const first = [...events].sort(
       (a, b) => new Date(a.start_time).getTime() - new Date(b.start_time).getTime(),
     )[0];
+
+    // Gán khách mời cho TẤT CẢ các lần lặp; chỉ gửi email mời cho lần đầu tiên
+    if (dto.guestEmails?.length) {
+      for (const ev of events) {
+        const added = await this.syncAttendees(supabase, ev.id, dto.guestEmails);
+        if (ev.id === first.id) {
+          await this.sendInvites(ev.id, added, {
+            title: dto.title,
+            startTime: ev.start_time,
+            location: dto.location ?? null,
+          });
+        }
+      }
+    }
+
     const attendees = await this.getAttendees(supabase, first.id);
     return { event: { ...first, attendees }, conflicts };
   }
@@ -150,7 +176,13 @@ export class EventsService {
     if (error) throw error;
 
     if (dto.guestEmails !== undefined) {
-      await this.syncAttendees(supabase, id, dto.guestEmails);
+      const added = await this.syncAttendees(supabase, id, dto.guestEmails);
+      // Gửi email mời cho các khách MỚI được thêm (khách cũ giữ nguyên trạng thái)
+      await this.sendInvites(id, added, {
+        title: event.title,
+        startTime: event.start_time,
+        location: event.location ?? null,
+      });
     }
 
     const attendees = await this.getAttendees(supabase, id);
@@ -169,13 +201,112 @@ export class EventsService {
     return data ?? [];
   }
 
-  /** Cách đơn giản nhất: xóa hết attendee cũ rồi thêm lại danh sách mới. Đủ dùng cho quy mô hiện tại. */
-  private async syncAttendees(supabase: SupabaseClient, eventId: string, emails: string[]) {
-    await supabase.from('event_attendees').delete().eq('event_id', eventId);
-    if (emails.length === 0) return;
+  /**
+   * Đồng bộ danh sách khách mời KIỂU GIA TĂNG: chỉ xóa khách bị bỏ ra, chỉ thêm khách mới
+   * (giữ nguyên trạng thái RSVP của khách cũ). Mỗi khách mới sinh 1 respond_token để dùng
+   * cho link Đồng ý/Từ chối trong email. Trả về danh sách khách MỚI kèm token để gửi mail.
+   */
+  private async syncAttendees(
+    supabase: SupabaseClient,
+    eventId: string,
+    emails: string[],
+  ): Promise<{ email: string; token: string }[]> {
+    const { data: existing } = await supabase.from('event_attendees').select('email').eq('event_id', eventId);
+    const existingLower = new Set((existing ?? []).map((a) => a.email.toLowerCase()));
+    const keepLower = new Set(emails.map((e) => e.toLowerCase()));
 
-    const rows = emails.map((email) => ({ event_id: eventId, email, status: 'needsAction' as const }));
-    const { error } = await supabase.from('event_attendees').insert(rows);
-    if (error) throw error;
+    const toRemove = (existing ?? []).map((a) => a.email).filter((e) => !keepLower.has(e.toLowerCase()));
+    if (toRemove.length) {
+      await supabase.from('event_attendees').delete().eq('event_id', eventId).in('email', toRemove);
+    }
+
+    const added: { email: string; token: string }[] = [];
+    for (const email of emails) {
+      if (existingLower.has(email.toLowerCase())) continue;
+      const token = randomUUID();
+      const tokenExpires = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(); // hết hạn sau 7 ngày
+      const { error } = await supabase.from('event_attendees').insert({
+        event_id: eventId,
+        email,
+        status: 'needsAction',
+        respond_token: token,
+        token_expires_at: tokenExpires,
+      });
+      if (error) throw error;
+      added.push({ email, token });
+    }
+    return added;
+  }
+
+  /** Gửi email mời (kèm link Đồng ý/Từ chối) cho các khách mới thêm. Lỗi gửi mail không làm hỏng việc tạo event. */
+  private async sendInvites(
+    eventId: string,
+    added: { email: string; token: string }[],
+    ctx: InviteContext,
+  ): Promise<void> {
+    if (added.length === 0) return;
+    const base = this.config.get<string>('PUBLIC_API_URL') ?? 'http://localhost:3000/api';
+    for (const { email, token } of added) {
+      const acceptUrl = `${base}/events/${eventId}/respond-via-email?token=${token}&action=accept`;
+      const declineUrl = `${base}/events/${eventId}/respond-via-email?token=${token}&action=decline`;
+      try {
+        await this.mail.sendEventInvite({
+          to: email,
+          eventTitle: ctx.title,
+          startTime: ctx.startTime,
+          location: ctx.location,
+          acceptUrl,
+          declineUrl,
+        });
+      } catch (e) {
+        this.logger.error(`Gửi email mời thất bại cho ${email}`, e as Error);
+      }
+    }
+  }
+
+  /**
+   * Xử lý phản hồi từ nút trong email (KHÔNG cần đăng nhập) — xác thực bằng respond_token.
+   * Dùng adminClient (service_role) vì không có JWT của user. Token dùng 1 lần: sau khi phản hồi,
+   * respond_token bị xóa để không bấm lại được. Trả về HTML để hiển thị cho người bấm.
+   */
+  async respondViaToken(eventId: string, token: string, action: string): Promise<string> {
+    if (action !== 'accept' && action !== 'decline') {
+      return this.responsePage('Liên kết không hợp lệ', 'Hành động không hợp lệ.');
+    }
+    if (!token) {
+      return this.responsePage('Liên kết không hợp lệ', 'Thiếu mã xác nhận.');
+    }
+
+    const admin = this.supabaseService.adminClient;
+    const { data: attendee } = await admin
+      .from('event_attendees')
+      .select('id, token_expires_at')
+      .eq('event_id', eventId)
+      .eq('respond_token', token)
+      .maybeSingle();
+
+    if (!attendee) {
+      return this.responsePage('Liên kết không hợp lệ', 'Lời mời này đã được phản hồi hoặc liên kết không đúng.');
+    }
+    if (attendee.token_expires_at && new Date(attendee.token_expires_at).getTime() < Date.now()) {
+      return this.responsePage('Liên kết đã hết hạn', 'Lời mời này đã quá hạn phản hồi (7 ngày).');
+    }
+
+    const status = action === 'accept' ? 'accepted' : 'declined';
+    await admin.from('event_attendees').update({ status, respond_token: null }).eq('id', attendee.id);
+
+    const label = action === 'accept' ? 'ĐỒNG Ý tham gia ✅' : 'TỪ CHỐI ❌';
+    return this.responsePage('Đã ghi nhận phản hồi', `Bạn đã <strong>${label}</strong>. Cảm ơn bạn!`);
+  }
+
+  /** Trang HTML đơn giản trả về sau khi bấm nút trong email */
+  private responsePage(title: string, message: string): string {
+    return `<!doctype html><html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${title}</title></head>
+<body style="font-family:system-ui,Arial,sans-serif;background:#f8fafc;display:flex;min-height:100vh;align-items:center;justify-content:center;margin:0">
+  <div style="background:#fff;padding:32px 40px;border-radius:12px;box-shadow:0 4px 24px rgba(0,0,0,.08);text-align:center;max-width:420px">
+    <h1 style="font-size:20px;margin:0 0 10px;color:#0f172a">${title}</h1>
+    <p style="color:#475569;margin:0;line-height:1.5">${message}</p>
+  </div>
+</body></html>`;
   }
 }
