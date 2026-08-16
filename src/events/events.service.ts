@@ -133,7 +133,8 @@ export class EventsService {
       for (const ev of events) {
         const added = await this.syncAttendees(supabase, ev.id, dto.guestEmails);
         if (ev.id === first.id) {
-          await this.sendInvites(ev.id, added, {
+          // Gửi email NGẦM (không await) -> phản hồi về frontend ngay, không phải chờ SMTP
+          void this.sendInvites(ev.id, added, {
             title: dto.title,
             startTime: ev.start_time,
             location: dto.location ?? null,
@@ -177,8 +178,8 @@ export class EventsService {
 
     if (dto.guestEmails !== undefined) {
       const added = await this.syncAttendees(supabase, id, dto.guestEmails);
-      // Gửi email mời cho các khách MỚI được thêm (khách cũ giữ nguyên trạng thái)
-      await this.sendInvites(id, added, {
+      // Gửi email mời NGẦM cho khách MỚI thêm (không await -> phản hồi ngay, không chờ SMTP)
+      void this.sendInvites(id, added, {
         title: event.title,
         startTime: event.start_time,
         location: event.location ?? null,

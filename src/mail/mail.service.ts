@@ -83,9 +83,9 @@ export class MailService {
       hour: '2-digit',
       minute: '2-digit',
     });
-    const locationLine = params.location ? `<p style="margin:4px 0">📍 ${params.location}</p>` : '';
-    const button = (url: string, bg: string, label: string) =>
-      `<a href="${url}" style="display:inline-block;padding:10px 22px;margin:4px;border-radius:6px;background:${bg};color:#ffffff;text-decoration:none;font-weight:bold">${label}</a>`;
+    const locationRow = params.location
+      ? `<tr><td style="padding:6px 0;color:#374151;font-size:14px">📍&nbsp;&nbsp;${params.location}</td></tr>`
+      : '';
 
     await this.transporter.sendMail({
       from: this.fromAddress,
@@ -93,15 +93,37 @@ export class MailService {
       subject: `Lời mời tham gia: ${params.eventTitle}`,
       text: `Bạn được mời tham gia "${params.eventTitle}" vào ${timeLabel}.\nĐồng ý: ${params.acceptUrl}\nTừ chối: ${params.declineUrl}`,
       html: `
-        <p>Bạn được mời tham gia sự kiện:</p>
-        <h2 style="margin:4px 0">${params.eventTitle}</h2>
-        <p style="margin:4px 0">🕐 <strong>${timeLabel}</strong></p>
-        ${locationLine}
-        <p style="margin-top:18px">
-          ${button(params.acceptUrl, '#16a34a', '✔ Đồng ý')}
-          ${button(params.declineUrl, '#dc2626', '✘ Từ chối')}
-        </p>
-        <p style="color:#888;font-size:12px;margin-top:16px">Bấm nút để phản hồi ngay, không cần đăng nhập.</p>
+      <div style="background:#f3f4f6;padding:24px 0;font-family:'Segoe UI',Roboto,Helvetica,Arial,sans-serif">
+        <div style="max-width:480px;margin:0 auto">
+          <!-- Thanh thương hiệu -->
+          <div style="background:#1d4ed8;border-radius:12px 12px 0 0;padding:16px 28px">
+            <span style="color:#ffffff;font-size:16px;font-weight:600;letter-spacing:.2px">📅 Lịch</span>
+          </div>
+          <!-- Thân card -->
+          <div style="background:#ffffff;border:1px solid #e5e7eb;border-top:none;border-radius:0 0 12px 12px;padding:28px">
+            <p style="margin:0 0 6px;color:#6b7280;font-size:13px">Bạn được mời tham gia sự kiện</p>
+            <h1 style="margin:0 0 18px;font-size:22px;line-height:1.3;color:#111827">${params.eventTitle}</h1>
+
+            <table role="presentation" cellpadding="0" cellspacing="0" style="width:100%;background:#f9fafb;border-radius:10px;padding:6px 16px;margin-bottom:22px">
+              <tr><td style="padding:6px 0;color:#374151;font-size:14px">🕐&nbsp;&nbsp;${timeLabel}</td></tr>
+              ${locationRow}
+            </table>
+
+            <table role="presentation" cellpadding="0" cellspacing="0" style="width:100%">
+              <tr>
+                <td style="padding-right:6px;width:50%">
+                  <a href="${params.acceptUrl}" style="display:block;text-align:center;padding:12px 0;border-radius:8px;background:#16a34a;color:#ffffff;text-decoration:none;font-weight:600;font-size:15px">Đồng ý tham gia</a>
+                </td>
+                <td style="padding-left:6px;width:50%">
+                  <a href="${params.declineUrl}" style="display:block;text-align:center;padding:12px 0;border-radius:8px;background:#ffffff;border:1px solid #d1d5db;color:#374151;text-decoration:none;font-weight:600;font-size:15px">Từ chối</a>
+                </td>
+              </tr>
+            </table>
+
+            <p style="margin:20px 0 0;color:#9ca3af;font-size:12px;line-height:1.5">Bấm nút để phản hồi ngay — không cần đăng nhập. Lời mời hết hạn sau 7 ngày.</p>
+          </div>
+        </div>
+      </div>
       `,
     });
 
