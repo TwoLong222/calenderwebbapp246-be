@@ -2,7 +2,19 @@
 // class-validator sẽ tự động chặn request nếu thiếu field bắt buộc hoặc sai kiểu dữ liệu,
 // nhờ app.useGlobalPipes(new ValidationPipe(...)) đã bật trong main.ts.
 
-import { IsArray, IsBoolean, IsEmail, IsIn, IsISO8601, IsOptional, IsString, MaxLength } from 'class-validator';
+import {
+  IsArray,
+  IsBoolean,
+  IsEmail,
+  IsIn,
+  IsInt,
+  IsISO8601,
+  IsOptional,
+  IsString,
+  Max,
+  MaxLength,
+  Min,
+} from 'class-validator';
 
 export class CreateEventDto {
   @IsString()
@@ -41,4 +53,16 @@ export class CreateEventDto {
   @IsArray()
   @IsEmail({}, { each: true })
   guestEmails?: string[];
+
+  /** Kiểu lặp lại của sự kiện — 'none' hoặc không gửi = không lặp */
+  @IsOptional()
+  @IsIn(['none', 'daily', 'weekly', 'monthly'])
+  repeat?: 'none' | 'daily' | 'weekly' | 'monthly';
+
+  /** Số lần lặp (tính cả lần đầu). Tối đa 52 để tránh tạo quá nhiều. */
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Max(52)
+  repeatCount?: number;
 }

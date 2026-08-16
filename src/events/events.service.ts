@@ -67,38 +67,57 @@ export class EventsService {
     return data ?? [];
   }
 
+  /** Dời 1 mốc thời gian ISO theo chu kỳ lặp cho lần thứ i (i=0 là lần gốc) */
+  private shiftDate(iso: string, repeat: 'none' | 'daily' | 'weekly' | 'monthly', i: number): string {
+    const d = new Date(iso);
+    if (i === 0 || repeat === 'none') return d.toISOString();
+    if (repeat === 'daily') d.setDate(d.getDate() + i);
+    else if (repeat === 'weekly') d.setDate(d.getDate() + i * 7);
+    else if (repeat === 'monthly') d.setMonth(d.getMonth() + i);
+    return d.toISOString();
+  }
+
   async createEvent(supabase: SupabaseClient, userId: string, dto: CreateEventDto) {
     const calendarId = await this.getPrimaryCalendarId(supabase);
+    const repeat = dto.repeat ?? 'none';
+    // Số lần lặp: 'none' -> 1, còn lại lấy repeatCount (chặn trong [1, 52])
+    const count = repeat === 'none' ? 1 : Math.min(Math.max(dto.repeatCount ?? 1, 1), 52);
 
+    // Cảnh báo trùng lịch tính cho lần ĐẦU, TRƯỚC khi insert (để không tự trùng chính event vừa tạo)
     const conflicts = dto.isAllDay
       ? []
       : await this.findConflicts(supabase, calendarId, dto.startTime, dto.endTime);
 
-    const { data: event, error } = await supabase
-      .from('events')
-      .insert({
-        calendar_id: calendarId,
-        title: dto.title,
-        description: dto.description ?? null,
-        location: dto.location ?? null,
-        start_time: dto.startTime,
-        end_time: dto.endTime,
-        is_all_day: dto.isAllDay ?? false,
-        kind: dto.kind ?? 'event',
-        color: dto.color ?? 'sky',
-        creator_id: userId,
-      })
-      .select()
-      .single();
+    // Sinh danh sách các lần lặp — mỗi lần là 1 event thật, dời start/end theo chu kỳ
+    const rows = Array.from({ length: count }, (_, i) => ({
+      calendar_id: calendarId,
+      title: dto.title,
+      description: dto.description ?? null,
+      location: dto.location ?? null,
+      start_time: this.shiftDate(dto.startTime, repeat, i),
+      end_time: this.shiftDate(dto.endTime, repeat, i),
+      is_all_day: dto.isAllDay ?? false,
+      kind: dto.kind ?? 'event',
+      color: dto.color ?? 'sky',
+      creator_id: userId,
+    }));
 
+    const { data: events, error } = await supabase.from('events').insert(rows).select();
     if (error) throw error;
 
+    // Gán khách mời cho TẤT CẢ các lần lặp
     if (dto.guestEmails?.length) {
-      await this.syncAttendees(supabase, event.id, dto.guestEmails);
+      for (const ev of events) {
+        await this.syncAttendees(supabase, ev.id, dto.guestEmails);
+      }
     }
 
-    const attendees = await this.getAttendees(supabase, event.id);
-    return { event: { ...event, attendees }, conflicts };
+    // Trả về lần sớm nhất (event gốc) để frontend hiển thị ngay
+    const first = [...events].sort(
+      (a, b) => new Date(a.start_time).getTime() - new Date(b.start_time).getTime(),
+    )[0];
+    const attendees = await this.getAttendees(supabase, first.id);
+    return { event: { ...first, attendees }, conflicts };
   }
 
   async updateEvent(supabase: SupabaseClient, id: string, dto: UpdateEventDto) {
