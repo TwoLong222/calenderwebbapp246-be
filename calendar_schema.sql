@@ -56,6 +56,7 @@ create table if not exists events (
   id uuid primary key default gen_random_uuid(),
   calendar_id uuid not null references calendars (id) on delete cascade,
   creator_id uuid references auth.users (id) on delete set null,
+  creator_email text,  -- email người tạo (để hiện "Người tạo" ở popover, nhất là khi khách xem event được mời)
   kind event_kind not null default 'event',
   title text not null default '',
   description text,
@@ -71,6 +72,7 @@ create table if not exists events (
 );
 -- Phòng khi bảng đã tồn tại mà thiếu cột:
 alter table events add column if not exists creator_id uuid references auth.users (id) on delete set null;
+alter table events add column if not exists creator_email text;
 alter table events add column if not exists series_id uuid;
 create index if not exists events_series_idx on events (series_id);
 

@@ -95,7 +95,7 @@ export class EventsService {
     return d.toISOString();
   }
 
-  async createEvent(supabase: SupabaseClient, userId: string, dto: CreateEventDto) {
+  async createEvent(supabase: SupabaseClient, userId: string, userEmail: string, dto: CreateEventDto) {
     const calendarId = await this.getPrimaryCalendarId(supabase);
     const repeat = dto.repeat ?? 'none';
     // Số lần lặp: 'none' -> 1, còn lại lấy repeatCount (chặn trong [1, 52])
@@ -122,6 +122,7 @@ export class EventsService {
       color: dto.color ?? 'sky',
       series_id: seriesId,
       creator_id: userId,
+      creator_email: userEmail || null,
     }));
 
     const { data: events, error } = await supabase.from('events').insert(rows).select();

@@ -22,7 +22,7 @@ export class EventsController {
 
   @Post()
   create(@Req() req: any, @CurrentUser() user: User, @Body() dto: CreateEventDto) {
-    return this.eventsService.createEvent(req.supabase, user.id, dto);
+    return this.eventsService.createEvent(req.supabase, user.id, user.email ?? '', dto);
   }
 
   @Patch(':id')
