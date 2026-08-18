@@ -20,6 +20,24 @@ export class EventsController {
     return this.eventsService.listEvents(req.supabase);
   }
 
+  /** Danh sách sự kiện trong thùng rác của user */
+  @Get('trash')
+  listTrash(@Req() req: any, @CurrentUser() user: User) {
+    return this.eventsService.listTrash(req.supabase, user.id);
+  }
+
+  /** Khôi phục 1 sự kiện từ thùng rác */
+  @Post(':id/restore')
+  restore(@Req() req: any, @Param('id') id: string) {
+    return this.eventsService.restoreEvent(req.supabase, id);
+  }
+
+  /** Xóa vĩnh viễn 1 sự kiện trong thùng rác */
+  @Delete(':id/purge')
+  purge(@Req() req: any, @Param('id') id: string) {
+    return this.eventsService.purgeEvent(req.supabase, id);
+  }
+
   @Post()
   create(@Req() req: any, @CurrentUser() user: User, @Body() dto: CreateEventDto) {
     return this.eventsService.createEvent(req.supabase, user.id, user.email ?? '', dto);

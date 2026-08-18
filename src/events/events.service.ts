@@ -55,7 +55,21 @@ export class EventsService {
     const { data, error } = await supabase
       .from('events')
       .select('*, attendees:event_attendees(*)')
+      .is('deleted_at', null) // bỏ qua sự kiện đang trong thùng rác
       .order('start_time', { ascending: true });
+
+    if (error) throw error;
+    return data;
+  }
+
+  /** Liệt kê các sự kiện của CHÍNH user đang trong thùng rác (mới xóa lên đầu) */
+  async listTrash(supabase: SupabaseClient, userId: string) {
+    const { data, error } = await supabase
+      .from('events')
+      .select('*, attendees:event_attendees(*)')
+      .not('deleted_at', 'is', null)
+      .eq('creator_id', userId)
+      .order('deleted_at', { ascending: false });
 
     if (error) throw error;
     return data;
@@ -75,6 +89,7 @@ export class EventsService {
       .eq('calendar_id', calendarId)
       .eq('is_all_day', false)
       .eq('kind', 'event')
+      .is('deleted_at', null) // sự kiện đã xóa (trong thùng rác) không tính là trùng lịch
       .lt('start_time', endTime)
       .gt('end_time', startTime);
 
@@ -197,18 +212,44 @@ export class EventsService {
     return { event: { ...event, attendees }, conflicts };
   }
 
+  /** XÓA MỀM: đưa vào thùng rác (đặt deleted_at = now). Không mất dữ liệu, có thể khôi phục. */
   async deleteEvent(supabase: SupabaseClient, id: string, scope: 'single' | 'series' = 'single') {
-    // Xóa cả chuỗi lặp: tìm series_id của event rồi xóa mọi event cùng series_id
+    const deletedAt = new Date().toISOString();
+    // Xóa cả chuỗi lặp: tìm series_id của event rồi đánh dấu mọi event cùng series_id
     if (scope === 'series') {
       const { data: ev } = await supabase.from('events').select('series_id').eq('id', id).single();
       if (ev?.series_id) {
-        const { error } = await supabase.from('events').delete().eq('series_id', ev.series_id);
+        const { error } = await supabase
+          .from('events')
+          .update({ deleted_at: deletedAt })
+          .eq('series_id', ev.series_id)
+          .is('deleted_at', null);
         if (error) throw error;
         return { seriesId: ev.series_id };
       }
     }
-    // Mặc định: chỉ xóa 1 event
-    const { error } = await supabase.from('events').delete().eq('id', id);
+    // Mặc định: chỉ đưa 1 event vào thùng rác
+    const { error } = await supabase.from('events').update({ deleted_at: deletedAt }).eq('id', id);
+    if (error) throw error;
+    return { id };
+  }
+
+  /** KHÔI PHỤC 1 sự kiện từ thùng rác (đặt lại deleted_at = null) */
+  async restoreEvent(supabase: SupabaseClient, id: string) {
+    const { data, error } = await supabase
+      .from('events')
+      .update({ deleted_at: null })
+      .eq('id', id)
+      .select()
+      .maybeSingle();
+    if (error) throw error;
+    if (!data) throw new ForbiddenException('Bạn không có quyền khôi phục sự kiện này.');
+    return { id };
+  }
+
+  /** XÓA VĨNH VIỄN 1 sự kiện trong thùng rác (xóa hẳn khỏi database, không khôi phục được) */
+  async purgeEvent(supabase: SupabaseClient, id: string) {
+    const { error } = await supabase.from('events').delete().eq('id', id).not('deleted_at', 'is', null);
     if (error) throw error;
     return { id };
   }
