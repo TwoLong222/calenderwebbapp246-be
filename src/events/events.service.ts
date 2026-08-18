@@ -10,7 +10,7 @@
 // getPrimaryCalendarId() thành nhận calendarId từ request thay vì tự suy ra —
 // không cần sửa logic RLS vì đã được thiết kế sẵn từ đầu.
 
-import { Injectable, Logger } from '@nestjs/common';
+import { ForbiddenException, Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { randomUUID } from 'crypto';
 import type { SupabaseClient } from '@supabase/supabase-js';
@@ -178,8 +178,10 @@ export class EventsService {
     if (dto.kind !== undefined) patch['kind'] = dto.kind;
     if (dto.color !== undefined) patch['color'] = dto.color;
 
-    const { data: event, error } = await supabase.from('events').update(patch).eq('id', id).select().single();
+    const { data: event, error } = await supabase.from('events').update(patch).eq('id', id).select().maybeSingle();
     if (error) throw error;
+    // 0 dòng = RLS chặn (không phải chủ event) hoặc event không tồn tại
+    if (!event) throw new ForbiddenException('Bạn không có quyền sửa sự kiện này.');
 
     if (dto.guestEmails !== undefined) {
       const added = await this.syncAttendees(supabase, id, dto.guestEmails);
