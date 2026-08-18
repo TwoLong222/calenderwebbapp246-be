@@ -7,6 +7,7 @@ import { CurrentUser } from '../auth/current-user.decorator';
 import { SupabaseAuthGuard } from '../auth/supabase-auth.guard';
 import { CreateEventDto } from './dto/create-event.dto';
 import { UpdateEventDto } from './dto/update-event.dto';
+import { RsvpDto } from './dto/rsvp.dto';
 import { EventsService } from './events.service';
 
 @UseGuards(SupabaseAuthGuard)
@@ -32,5 +33,11 @@ export class EventsController {
   @Delete(':id')
   remove(@Req() req: any, @Param('id') id: string, @Query('scope') scope?: string) {
     return this.eventsService.deleteEvent(req.supabase, id, scope === 'series' ? 'series' : 'single');
+  }
+
+  /** User tự đặt trạng thái tham dự (Có/Không/Có thể) cho event — dùng chính email của mình */
+  @Post(':id/rsvp')
+  rsvp(@Req() req: any, @CurrentUser() user: User, @Param('id') id: string, @Body() dto: RsvpDto) {
+    return this.eventsService.rsvp(req.supabase, id, user.email ?? '', dto.status);
   }
 }

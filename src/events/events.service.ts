@@ -210,6 +210,27 @@ export class EventsService {
     return { id };
   }
 
+  /** User tự cập nhật trạng thái tham dự của mình (theo email). Nếu chưa là khách -> thêm vào. */
+  async rsvp(supabase: SupabaseClient, eventId: string, email: string, status: string) {
+    if (!email) throw new Error('Không xác định được email người dùng.');
+
+    const { data: existing } = await supabase
+      .from('event_attendees')
+      .select('id')
+      .eq('event_id', eventId)
+      .eq('email', email)
+      .maybeSingle();
+
+    if (existing) {
+      await supabase.from('event_attendees').update({ status }).eq('id', existing.id);
+    } else {
+      await supabase.from('event_attendees').insert({ event_id: eventId, email, status });
+    }
+
+    const attendees = await this.getAttendees(supabase, eventId);
+    return { attendees };
+  }
+
   private async getAttendees(supabase: SupabaseClient, eventId: string) {
     const { data, error } = await supabase.from('event_attendees').select('*').eq('event_id', eventId);
     if (error) throw error;
