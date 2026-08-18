@@ -106,6 +106,9 @@ export class EventsService {
       ? []
       : await this.findConflicts(supabase, calendarId, dto.startTime, dto.endTime);
 
+    // Các lần lặp cùng 1 chuỗi có chung series_id (để sau này xóa cả chuỗi); không lặp -> null
+    const seriesId = count > 1 ? randomUUID() : null;
+
     // Sinh danh sách các lần lặp — mỗi lần là 1 event thật, dời start/end theo chu kỳ
     const rows = Array.from({ length: count }, (_, i) => ({
       calendar_id: calendarId,
@@ -117,6 +120,7 @@ export class EventsService {
       is_all_day: dto.isAllDay ?? false,
       kind: dto.kind ?? 'event',
       color: dto.color ?? 'sky',
+      series_id: seriesId,
       creator_id: userId,
     }));
 
@@ -190,7 +194,17 @@ export class EventsService {
     return { event: { ...event, attendees }, conflicts };
   }
 
-  async deleteEvent(supabase: SupabaseClient, id: string) {
+  async deleteEvent(supabase: SupabaseClient, id: string, scope: 'single' | 'series' = 'single') {
+    // Xóa cả chuỗi lặp: tìm series_id của event rồi xóa mọi event cùng series_id
+    if (scope === 'series') {
+      const { data: ev } = await supabase.from('events').select('series_id').eq('id', id).single();
+      if (ev?.series_id) {
+        const { error } = await supabase.from('events').delete().eq('series_id', ev.series_id);
+        if (error) throw error;
+        return { seriesId: ev.series_id };
+      }
+    }
+    // Mặc định: chỉ xóa 1 event
     const { error } = await supabase.from('events').delete().eq('id', id);
     if (error) throw error;
     return { id };

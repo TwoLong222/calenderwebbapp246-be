@@ -1,7 +1,7 @@
 // EventsController: REST endpoint /api/events — tất cả đều yêu cầu đăng nhập
 // (bảo vệ bởi SupabaseAuthGuard đã tạo ở tính năng Auth).
 
-import { Body, Controller, Delete, Get, Param, Patch, Post, Req, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, Patch, Post, Query, Req, UseGuards } from '@nestjs/common';
 import type { User } from '@supabase/supabase-js';
 import { CurrentUser } from '../auth/current-user.decorator';
 import { SupabaseAuthGuard } from '../auth/supabase-auth.guard';
@@ -30,7 +30,7 @@ export class EventsController {
   }
 
   @Delete(':id')
-  remove(@Req() req: any, @Param('id') id: string) {
-    return this.eventsService.deleteEvent(req.supabase, id);
+  remove(@Req() req: any, @Param('id') id: string, @Query('scope') scope?: string) {
+    return this.eventsService.deleteEvent(req.supabase, id, scope === 'series' ? 'series' : 'single');
   }
 }

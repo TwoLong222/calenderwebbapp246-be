@@ -65,11 +65,14 @@ create table if not exists events (
   is_all_day boolean not null default false,
   color text not null default 'sky',
   recurrence_rule text,
+  series_id uuid,  -- các sự kiện lặp cùng 1 chuỗi có chung series_id (để xóa cả chuỗi); null = không lặp
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
--- Phòng khi bảng đã tồn tại mà thiếu creator_id:
+-- Phòng khi bảng đã tồn tại mà thiếu cột:
 alter table events add column if not exists creator_id uuid references auth.users (id) on delete set null;
+alter table events add column if not exists series_id uuid;
+create index if not exists events_series_idx on events (series_id);
 
 -- Index GIST khoảng thời gian -> query theo tuần + findConflicts nhanh ở phía Postgres
 alter table events add column if not exists during tstzrange
