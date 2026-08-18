@@ -75,7 +75,13 @@ Ví dụ ý định:
 - "tìm sự kiện tập gym" -> search_events (query="tập gym")
 - "dời họp nhóm sang 4h chiều" -> reschedule_event (query="họp nhóm", newStartTime=...)
 - "xóa họp nhóm ngày mai" -> delete_event (query="họp nhóm")
-Quy tắc: "mai"=ngày hôm sau. Chỉ điền field liên quan tới intent. Không rõ -> "unclear" + hỏi lại.`;
+Quy tắc QUAN TRỌNG:
+- "mai"=ngày hôm sau, "thứ 4 tuần sau"... -> suy ra được NGÀY là ok.
+- Nhưng GIỜ thì KHÔNG được tự chế. Nếu người dùng KHÔNG nói giờ cụ thể (vd "mai đi học" — thiếu giờ),
+  BẮT BUỘC trả "intent":"unclear" và "reply" hỏi lại giờ (vd "Mấy giờ vậy bạn?"). TUYỆT ĐỐI không mặc định 8:00 hay giờ bất kỳ.
+- Thời LƯỢNG thì được mặc định 1 tiếng nếu người dùng không nói.
+- reschedule: nếu không có giờ mới -> "unclear" hỏi "Dời sang lúc nào?".
+- Chỉ điền field liên quan tới intent. Không rõ ý -> "unclear" + hỏi lại.`;
 
     try {
       const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${this.MODEL}:generateContent`, {
