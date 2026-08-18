@@ -18,7 +18,7 @@ export interface AiParseResult {
 @Injectable()
 export class AiService {
   private readonly logger = new Logger(AiService.name);
-  private readonly MODEL = 'gemini-2.0-flash';
+  private readonly MODEL = 'gemini-3.6-flash';
 
   // Rate-limit đơn giản trong bộ nhớ: tối đa 20 request / user / giờ
   private readonly hits = new Map<string, number[]>();
