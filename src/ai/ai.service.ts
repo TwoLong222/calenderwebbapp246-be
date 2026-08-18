@@ -53,7 +53,7 @@ Người dùng nói 1 câu để TẠO sự kiện. Hãy trả về DUY NHẤT m
   "title": "tiêu đề sự kiện, ngắn gọn",
   "startTime": "thời điểm bắt đầu dạng ISO 8601, suy luận từ câu nói và ngày hôm nay",
   "endTime": "thời điểm kết thúc dạng ISO 8601; nếu không rõ thời lượng thì mặc định 1 tiếng sau startTime",
-  "reply": "một câu tiếng Việt ngắn xác nhận lại điều bạn hiểu"
+  "reply": "một câu tiếng Việt ngắn mô tả sự kiện SẼ được tạo — KHÔNG nói 'đã tạo' vì người dùng còn phải bấm Xác nhận"
 }
 Quy tắc:
 - "mai"/"ngày mai" = ngày hôm sau; "chiều" nếu không có giờ cụ thể thì hiểu là giờ đã nêu.
