@@ -8,6 +8,7 @@ import { EventsModule } from '../events/events.module';
 import { ReminderModule } from '../reminder/reminder.module';
 import { MailModule } from '../mail/mail.module';
 import { CommentsModule } from '../comments/comments.module';
+import { AiModule } from '../ai/ai.module';
 
 @Module({
   imports: [
@@ -17,7 +18,8 @@ import { CommentsModule } from '../comments/comments.module';
     EventsModule,
     ReminderModule,
     MailModule,
-    CommentsModule,],
+    CommentsModule,
+    AiModule,],
   controllers: [AppController],
   providers: [AppService],
 })
