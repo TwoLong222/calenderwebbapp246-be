@@ -8,10 +8,19 @@ import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 
 export interface AiParseResult {
-  intent: 'create_event' | 'unclear';
+  intent: 'create_event' | 'search_events' | 'reschedule_event' | 'delete_event' | 'unclear';
+  // create_event
   title?: string;
   startTime?: string; // ISO 8601
   endTime?: string; // ISO 8601
+  // search / reschedule / delete: từ khóa tên sự kiện cần thao tác
+  query?: string;
+  // search: khoảng thời gian (vd "tuần này")
+  rangeStart?: string;
+  rangeEnd?: string;
+  // reschedule: giờ mới
+  newStartTime?: string;
+  newEndTime?: string;
   reply: string; // câu phản hồi cho người dùng
 }
 
@@ -47,17 +56,26 @@ export class AiService {
 
     const now = new Date();
     const systemPrompt = `Bạn là trợ lý lịch tiếng Việt. Bây giờ là ${now.toISOString()} (giờ Việt Nam UTC+7).
-Người dùng nói 1 câu để TẠO sự kiện. Hãy trả về DUY NHẤT một JSON đúng schema dưới đây, KHÔNG thêm chữ nào khác, KHÔNG markdown:
+Người dùng nói 1 câu để thao tác lịch. Xác định Ý ĐỊNH và trả về DUY NHẤT một JSON đúng schema, KHÔNG thêm chữ nào khác, KHÔNG markdown:
 {
-  "intent": "create_event" hoặc "unclear",
-  "title": "tiêu đề sự kiện, ngắn gọn",
-  "startTime": "thời điểm bắt đầu dạng ISO 8601, suy luận từ câu nói và ngày hôm nay",
-  "endTime": "thời điểm kết thúc dạng ISO 8601; nếu không rõ thời lượng thì mặc định 1 tiếng sau startTime",
-  "reply": "một câu tiếng Việt ngắn mô tả sự kiện SẼ được tạo — KHÔNG nói 'đã tạo' vì người dùng còn phải bấm Xác nhận"
+  "intent": "create_event" | "search_events" | "reschedule_event" | "delete_event" | "unclear",
+  "title": "chỉ dùng cho create_event: tiêu đề ngắn gọn",
+  "startTime": "create_event: ISO 8601 giờ bắt đầu",
+  "endTime": "create_event: ISO 8601 giờ kết thúc, mặc định +1 tiếng nếu không rõ",
+  "query": "search/reschedule/delete: từ khóa TÊN sự kiện cần tìm/dời/xóa (vd 'họp nhóm')",
+  "rangeStart": "search: ISO 8601 đầu khoảng thời gian nếu có (vd 'tuần này')",
+  "rangeEnd": "search: ISO 8601 cuối khoảng",
+  "newStartTime": "reschedule: ISO 8601 giờ bắt đầu MỚI",
+  "newEndTime": "reschedule: ISO 8601 giờ kết thúc mới nếu người dùng nêu",
+  "reply": "một câu tiếng Việt ngắn. Với create/reschedule/delete: mô tả điều SẼ làm — KHÔNG nói 'đã ...' vì cần bấm Xác nhận"
 }
-Quy tắc:
-- "mai"/"ngày mai" = ngày hôm sau; "chiều" nếu không có giờ cụ thể thì hiểu là giờ đã nêu.
-- Nếu KHÔNG suy ra được thời gian rõ ràng, đặt "intent":"unclear" và "reply" hỏi lại người dùng.`;
+Ví dụ ý định:
+- "mai 3h chiều họp nhóm 1 tiếng" -> create_event
+- "tuần này có họp gì" -> search_events (query rỗng, range = tuần này)
+- "tìm sự kiện tập gym" -> search_events (query="tập gym")
+- "dời họp nhóm sang 4h chiều" -> reschedule_event (query="họp nhóm", newStartTime=...)
+- "xóa họp nhóm ngày mai" -> delete_event (query="họp nhóm")
+Quy tắc: "mai"=ngày hôm sau. Chỉ điền field liên quan tới intent. Không rõ -> "unclear" + hỏi lại.`;
 
     try {
       const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${this.MODEL}:generateContent`, {
@@ -79,9 +97,7 @@ Quy tắc:
       if (!raw) return { intent: 'unclear', reply: 'Xin lỗi, mình chưa hiểu ý bạn.' };
 
       const parsed = JSON.parse(raw) as AiParseResult;
-      if (parsed.intent !== 'create_event') {
-        return { intent: 'unclear', reply: parsed.reply || 'Bạn nói rõ hơn về thời gian giúp mình nhé.' };
-      }
+      if (!parsed?.intent) return { intent: 'unclear', reply: parsed?.reply || 'Xin lỗi, mình chưa hiểu ý bạn.' };
       return parsed;
     } catch (e) {
       this.logger.error('Lỗi gọi/parse Gemini', e as Error);
