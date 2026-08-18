@@ -84,19 +84,37 @@ Quy tắc QUAN TRỌNG:
 - Chỉ điền field liên quan tới intent. Không rõ ý -> "unclear" + hỏi lại.`;
 
     try {
-      const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${this.MODEL}:generateContent`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey },
-        body: JSON.stringify({
-          contents: [{ parts: [{ text: `${systemPrompt}\n\nCâu người dùng: "${userText}"` }] }],
-          generationConfig: { responseMimeType: 'application/json', temperature: 0.2 },
-        }),
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/${this.MODEL}:generateContent`;
+      const reqBody = JSON.stringify({
+        contents: [{ parts: [{ text: `${systemPrompt}\n\nCâu người dùng: "${userText}"` }] }],
+        generationConfig: { responseMimeType: 'application/json', temperature: 0.2 },
       });
 
-      const data: any = await res.json();
-      if (!res.ok) {
+      // Model có thể bị quá tải (503) hoặc rate-limit (429) tạm thời -> tự thử lại tối đa 3 lần
+      let data: any;
+      let ok = false;
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        const res = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey },
+          body: reqBody,
+        });
+        data = await res.json();
+        if (res.ok) {
+          ok = true;
+          break;
+        }
+        if ((res.status === 503 || res.status === 429) && attempt < 3) {
+          this.logger.warn(`Gemini ${res.status} (quá tải), thử lại lần ${attempt}...`);
+          await new Promise((r) => setTimeout(r, 1000 * attempt));
+          continue;
+        }
         this.logger.error(`Gemini lỗi ${res.status}: ${JSON.stringify(data?.error ?? data)}`);
-        return { intent: 'unclear', reply: 'Trợ lý AI đang gặp lỗi kết nối. Thử lại sau nhé.' };
+        break;
+      }
+
+      if (!ok) {
+        return { intent: 'unclear', reply: 'Trợ lý AI đang quá tải, bạn thử lại sau vài giây nhé.' };
       }
 
       const raw: string | undefined = data?.candidates?.[0]?.content?.parts?.[0]?.text;
