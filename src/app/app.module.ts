@@ -7,6 +7,7 @@ import { ScheduleModule } from '@nestjs/schedule';
 import { EventsModule } from '../events/events.module';
 import { ReminderModule } from '../reminder/reminder.module';
 import { MailModule } from '../mail/mail.module';
+import { CommentsModule } from '../comments/comments.module';
 
 @Module({
   imports: [
@@ -15,7 +16,8 @@ import { MailModule } from '../mail/mail.module';
     AuthModule,
     EventsModule,
     ReminderModule,
-    MailModule,],
+    MailModule,
+    CommentsModule,],
   controllers: [AppController],
   providers: [AppService],
 })
