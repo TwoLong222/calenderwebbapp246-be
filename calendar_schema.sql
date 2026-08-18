@@ -161,6 +161,33 @@ create policy "Users manage attendees of their own events"
   ));
 
 -- =========================================================================
+-- KHÁCH MỜI XEM ĐƯỢC EVENT TRÊN LỊCH CỦA MÌNH
+-- Cho phép user đọc event mà EMAIL của họ được mời (khớp email trong JWT).
+-- Dùng hàm SECURITY DEFINER để né RLS đệ quy giữa 2 bảng events/event_attendees.
+-- =========================================================================
+create or replace function is_event_attendee(evt uuid)
+returns boolean language sql security definer stable set search_path = public as $$
+  select exists (
+    select 1 from event_attendees a
+    where a.event_id = evt and lower(a.email) = lower(auth.jwt() ->> 'email')
+  );
+$$;
+
+-- Khách mời ĐỌC được event họ được mời (bổ sung cho policy chủ sở hữu ở trên)
+drop policy if exists "Attendees can read invited events" on events;
+create policy "Attendees can read invited events"
+  on events for select
+  using (is_event_attendee(events.id));
+
+-- Khách mời quản lý (đọc + đổi trạng thái RSVP) CHÍNH dòng attendee của mình.
+-- Policy đơn giản (so email của dòng với JWT) -> không gây đệ quy.
+drop policy if exists "Users manage their own attendee row" on event_attendees;
+create policy "Users manage their own attendee row"
+  on event_attendees for all
+  using (lower(email) = lower(auth.jwt() ->> 'email'))
+  with check (lower(email) = lower(auth.jwt() ->> 'email'));
+
+-- =========================================================================
 -- RPC get_due_event_reminders() — reminder.service.ts gọi mỗi 5 phút.
 -- Trả về các khách mời của event SẮP diễn ra (trong 30 phút tới) mà CHƯA được
 -- gửi mail nhắc và chưa từ chối. Sau khi gửi, service set reminder_sent_at để
