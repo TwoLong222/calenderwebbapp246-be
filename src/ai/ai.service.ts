@@ -6,6 +6,7 @@
 
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { SettingsService } from '../settings/settings.service';
 
 export interface AiParseResult {
   intent: 'create_event' | 'plan_schedule' | 'search_events' | 'reschedule_event' | 'delete_event' | 'unclear';
@@ -41,7 +42,31 @@ export class AiService {
   private readonly LIMIT = 20;
   private readonly WINDOW_MS = 60 * 60 * 1000;
 
-  constructor(private readonly config: ConfigService) {}
+  constructor(
+    private readonly config: ConfigService,
+    private readonly settings: SettingsService,
+  ) {}
+
+  /** Chặn hành động AI theo ai_settings của user (defense-in-depth, không chỉ ẩn UI). */
+  private enforceAiPermission(result: AiParseResult, ai: any): AiParseResult {
+    const denied = (label: string): AiParseResult => ({
+      intent: 'unclear',
+      reply: `Bạn đã tắt quyền ${label} của AI trong Cài đặt → Trợ lý AI.`,
+    });
+    switch (result.intent) {
+      case 'create_event':
+        return ai?.allow_create === false ? denied('tạo sự kiện') : result;
+      case 'reschedule_event':
+        return ai?.allow_update === false ? denied('cập nhật sự kiện') : result;
+      case 'delete_event':
+        return ai?.allow_delete === false ? denied('xoá sự kiện') : result;
+      case 'search_events':
+      case 'plan_schedule':
+        return ai?.allow_search === false ? denied('tìm kiếm lịch') : result;
+      default:
+        return result;
+    }
+  }
 
   private checkRateLimit(userId: string): void {
     const now = Date.now();
@@ -55,6 +80,12 @@ export class AiService {
 
   async parseCommand(userId: string, userText: string): Promise<AiParseResult> {
     this.checkRateLimit(userId);
+
+    // PHASE 5: AI bị tắt trong Cài đặt -> không xử lý.
+    const ai = (await this.settings.adminGetSettings(userId)).ai_settings ?? {};
+    if (ai.enabled === false) {
+      return { intent: 'unclear', reply: 'Trợ lý AI đang tắt. Bật lại trong Cài đặt → Trợ lý AI.' };
+    }
 
     const apiKey = this.config.get<string>('GEMINI_API_KEY');
     if (!apiKey) {
@@ -137,7 +168,7 @@ Quy tắc QUAN TRỌNG:
 
       const parsed = JSON.parse(raw) as AiParseResult;
       if (!parsed?.intent) return { intent: 'unclear', reply: parsed?.reply || 'Xin lỗi, mình chưa hiểu ý bạn.' };
-      return parsed;
+      return this.enforceAiPermission(parsed, ai);
     } catch (e) {
       this.logger.error('Lỗi gọi/parse Gemini', e as Error);
       return { intent: 'unclear', reply: 'Xin lỗi, mình chưa xử lý được câu này. Thử diễn đạt khác nhé.' };

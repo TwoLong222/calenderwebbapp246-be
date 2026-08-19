@@ -18,6 +18,7 @@ import { CreateEventDto } from './dto/create-event.dto';
 import { UpdateEventDto } from './dto/update-event.dto';
 import { MailService } from '../mail/mail.service';
 import { SupabaseService } from '../supabase/supabase.service';
+import { SettingsService } from '../settings/settings.service';
 
 export interface ConflictRow {
   id: string;
@@ -40,6 +41,7 @@ export class EventsService {
     private readonly mail: MailService,
     private readonly supabaseService: SupabaseService,
     private readonly config: ConfigService,
+    private readonly settings: SettingsService,
   ) {}
 
   private async getPrimaryCalendarId(supabase: SupabaseClient): Promise<string> {
@@ -327,6 +329,10 @@ export class EventsService {
     if (added.length === 0) return;
     const base = this.config.get<string>('PUBLIC_API_URL') ?? 'http://localhost:3000/api';
     for (const { email, token } of added) {
+      // PHASE 5: tôn trọng email_preferences — người nhận là user đã tắt "lời mời" thì bỏ qua.
+      if (!(await this.settings.isEmailEnabledForEmail(email, 'event_invitation'))) {
+        continue;
+      }
       const acceptUrl = `${base}/events/${eventId}/respond-via-email?token=${token}&action=accept`;
       const declineUrl = `${base}/events/${eventId}/respond-via-email?token=${token}&action=decline`;
       try {

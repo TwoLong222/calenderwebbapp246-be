@@ -176,6 +176,44 @@ export class SettingsService {
     return prefs[key] !== false; // thiếu key -> coi như bật
   }
 
+  /**
+   * true nếu nên gửi 1 loại email tới địa chỉ `email`.
+   * - Là user đã đăng ký và TẮT loại này -> false (không gửi).
+   * - Khách ngoài (không phải user) -> true (vẫn gửi).
+   * Map email->user_id được cache 60s để tránh gọi listUsers liên tục.
+   */
+  async isEmailEnabledForEmail(
+    email: string,
+    key: keyof typeof DEFAULTS.email_preferences,
+  ): Promise<boolean> {
+    const uid = await this.getUserIdByEmail(email);
+    if (!uid) return true;
+    return this.isEmailEnabled(uid, key);
+  }
+
+  private emailToId: { map: Map<string, string>; at: number } | null = null;
+
+  private async getUserIdByEmail(email: string): Promise<string | null> {
+    const now = Date.now();
+    if (!this.emailToId || now - this.emailToId.at > 60_000) {
+      const map = new Map<string, string>();
+      try {
+        const { data } =
+          await this.supabaseService.adminClient.auth.admin.listUsers({
+            page: 1,
+            perPage: 1000,
+          });
+        for (const u of data?.users ?? []) {
+          if (u.email) map.set(u.email.toLowerCase(), u.id);
+        }
+      } catch (e) {
+        this.logger.warn(`listUsers lỗi: ${(e as Error).message}`);
+      }
+      this.emailToId = { map, at: now };
+    }
+    return this.emailToId.map.get(email.toLowerCase()) ?? null;
+  }
+
   private isValidTimezone(tz: string): boolean {
     try {
       Intl.DateTimeFormat(undefined, { timeZone: tz });
