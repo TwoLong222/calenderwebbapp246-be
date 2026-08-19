@@ -8,7 +8,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 
 export interface AiParseResult {
-  intent: 'create_event' | 'search_events' | 'reschedule_event' | 'delete_event' | 'unclear';
+  intent: 'create_event' | 'plan_schedule' | 'search_events' | 'reschedule_event' | 'delete_event' | 'unclear';
   // create_event
   title?: string;
   startTime?: string; // ISO 8601
@@ -21,6 +21,13 @@ export interface AiParseResult {
   // reschedule: giờ mới
   newStartTime?: string;
   newEndTime?: string;
+  count?: number;
+  durationMinutes?: number;
+  planStart?: string;
+  planEnd?: string;
+  preferredStartHour?: number;
+  preferredEndHour?: number;
+  allowedWeekdays?: number[];
   reply: string; // câu phản hồi cho người dùng
 }
 
@@ -58,7 +65,15 @@ export class AiService {
     const systemPrompt = `Bạn là trợ lý lịch tiếng Việt. Bây giờ là ${now.toISOString()} (giờ Việt Nam UTC+7).
 Người dùng nói 1 câu để thao tác lịch. Xác định Ý ĐỊNH và trả về DUY NHẤT một JSON đúng schema, KHÔNG thêm chữ nào khác, KHÔNG markdown:
 {
-  "intent": "create_event" | "search_events" | "reschedule_event" | "delete_event" | "unclear",
+  "intent": "create_event" | "plan_schedule" | "search_events" | "reschedule_event" | "delete_event" | "unclear",
+  "count": "plan_schedule only: number of sessions, default 1",
+  "durationMinutes": "plan_schedule only: minutes per session, default 60",
+  "planStart": "plan_schedule only: ISO start of planning window",
+  "planEnd": "plan_schedule only: ISO end of planning window",
+  "preferredStartHour": "plan_schedule only: earliest local hour (0-23)",
+  "preferredEndHour": "plan_schedule only: latest local hour (0-24)",
+  "allowedWeekdays": "plan_schedule only: allowed JS weekdays, Sunday=0 through Saturday=6",
+  "planningRule": "Use plan_schedule when user asks to schedule multiple sessions into free time. The client chooses exact free slots; never invent them.",
   "title": "chỉ dùng cho create_event: tiêu đề ngắn gọn",
   "startTime": "create_event: ISO 8601 giờ bắt đầu",
   "endTime": "create_event: ISO 8601 giờ kết thúc, mặc định +1 tiếng nếu không rõ",

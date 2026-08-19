@@ -9,6 +9,7 @@ import { ReminderModule } from '../reminder/reminder.module';
 import { MailModule } from '../mail/mail.module';
 import { CommentsModule } from '../comments/comments.module';
 import { AiModule } from '../ai/ai.module';
+import { SettingsModule } from '../settings/settings.module';
 
 @Module({
   imports: [
@@ -19,7 +20,8 @@ import { AiModule } from '../ai/ai.module';
     ReminderModule,
     MailModule,
     CommentsModule,
-    AiModule,],
+    AiModule,
+    SettingsModule,],
   controllers: [AppController],
   providers: [AppService],
 })

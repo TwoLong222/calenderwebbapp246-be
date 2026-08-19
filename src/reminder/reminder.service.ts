@@ -42,7 +42,18 @@ export class ReminderService {
 
     this.logger.log(`Tìm thấy ${rows.length} email nhắc lịch cần gửi`);
 
+    // PHASE 5: tôn trọng email_preferences — email của user đã TẮT "event_reminder"
+    // thì bỏ qua (vẫn đánh dấu reminder_sent_at để không quét lại vô hạn).
+    const disabledEmails = await this.getReminderDisabledEmails();
+
     for (const row of rows) {
+      if (disabledEmails.has(row.attendee_email.toLowerCase())) {
+        await this.supabaseService.adminClient
+          .from('event_attendees')
+          .update({ reminder_sent_at: new Date().toISOString() })
+          .eq('id', row.attendee_id);
+        continue;
+      }
       try {
         await this.mailService.sendEventReminder({
           to: row.attendee_email,
@@ -60,5 +71,38 @@ export class ReminderService {
         this.logger.error(`Gửi email nhắc lịch thất bại cho ${row.attendee_email}`, err as Error);
       }
     }
+  }
+
+  /**
+   * Trả về Set email (lowercase) của những user đã TẮT nhắc lịch qua email.
+   * Bước 1: đọc user_settings có event_reminder = false.
+   * Bước 2: map các user_id đó -> email qua Supabase Auth Admin.
+   */
+  private async getReminderDisabledEmails(): Promise<Set<string>> {
+    const disabled = new Set<string>();
+    try {
+      const { data: rows } = await this.supabaseService.adminClient
+        .from('user_settings')
+        .select('user_id, email_preferences');
+
+      const disabledIds = new Set(
+        (rows ?? [])
+          .filter((r: any) => r.email_preferences?.event_reminder === false)
+          .map((r: any) => r.user_id as string),
+      );
+      if (disabledIds.size === 0) return disabled;
+
+      const { data: list } =
+        await this.supabaseService.adminClient.auth.admin.listUsers({
+          page: 1,
+          perPage: 1000,
+        });
+      for (const u of list?.users ?? []) {
+        if (disabledIds.has(u.id) && u.email) disabled.add(u.email.toLowerCase());
+      }
+    } catch (err) {
+      this.logger.warn(`Không đọc được email_preferences: ${(err as Error).message}`);
+    }
+    return disabled;
   }
 }
