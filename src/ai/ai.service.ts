@@ -48,21 +48,34 @@ export class AiService {
   ) {}
 
   /** Chặn hành động AI theo ai_settings của user (defense-in-depth, không chỉ ẩn UI). */
-  private enforceAiPermission(result: AiParseResult, ai: any): AiParseResult {
+  private enforceAiPermission(
+    result: AiParseResult,
+    ai: any,
+    lang: 'vi' | 'en',
+  ): AiParseResult {
+    const labels = {
+      create: lang === 'en' ? 'create events' : 'tạo sự kiện',
+      update: lang === 'en' ? 'update events' : 'cập nhật sự kiện',
+      delete: lang === 'en' ? 'delete events' : 'xoá sự kiện',
+      search: lang === 'en' ? 'search the calendar' : 'tìm kiếm lịch',
+    };
     const denied = (label: string): AiParseResult => ({
       intent: 'unclear',
-      reply: `Bạn đã tắt quyền ${label} của AI trong Cài đặt → Trợ lý AI.`,
+      reply:
+        lang === 'en'
+          ? `You have turned off the AI permission to ${label} in Settings → AI Assistant.`
+          : `Bạn đã tắt quyền ${label} của AI trong Cài đặt → Trợ lý AI.`,
     });
     switch (result.intent) {
       case 'create_event':
-        return ai?.allow_create === false ? denied('tạo sự kiện') : result;
+        return ai?.allow_create === false ? denied(labels.create) : result;
       case 'reschedule_event':
-        return ai?.allow_update === false ? denied('cập nhật sự kiện') : result;
+        return ai?.allow_update === false ? denied(labels.update) : result;
       case 'delete_event':
-        return ai?.allow_delete === false ? denied('xoá sự kiện') : result;
+        return ai?.allow_delete === false ? denied(labels.delete) : result;
       case 'search_events':
       case 'plan_schedule':
-        return ai?.allow_search === false ? denied('tìm kiếm lịch') : result;
+        return ai?.allow_search === false ? denied(labels.search) : result;
       default:
         return result;
     }
@@ -82,14 +95,22 @@ export class AiService {
     this.checkRateLimit(userId);
 
     // PHASE 5: AI bị tắt trong Cài đặt -> không xử lý.
-    const ai = (await this.settings.adminGetSettings(userId)).ai_settings ?? {};
+    const settings = await this.settings.adminGetSettings(userId);
+    const ai = settings.ai_settings ?? {};
+    const lang: 'vi' | 'en' = settings.language === 'en' ? 'en' : 'vi';
     if (ai.enabled === false) {
-      return { intent: 'unclear', reply: 'Trợ lý AI đang tắt. Bật lại trong Cài đặt → Trợ lý AI.' };
+      return {
+        intent: 'unclear',
+        reply:
+          lang === 'en'
+            ? 'The AI Assistant is off. Enable it in Settings → AI Assistant.'
+            : 'Trợ lý AI đang tắt. Bật lại trong Cài đặt → Trợ lý AI.',
+      };
     }
 
     const apiKey = this.config.get<string>('GEMINI_API_KEY');
     if (!apiKey) {
-      return { intent: 'unclear', reply: 'Trợ lý AI chưa được cấu hình (thiếu GEMINI_API_KEY).' };
+      return { intent: 'unclear', reply: lang === 'en' ? 'The AI Assistant is not configured (missing GEMINI_API_KEY).' : 'Trợ lý AI chưa được cấu hình (thiếu GEMINI_API_KEY).' };
     }
 
     const now = new Date();
@@ -127,7 +148,8 @@ Quy tắc QUAN TRỌNG:
   BẮT BUỘC trả "intent":"unclear" và "reply" hỏi lại giờ (vd "Mấy giờ vậy bạn?"). TUYỆT ĐỐI không mặc định 8:00 hay giờ bất kỳ.
 - Thời LƯỢNG thì được mặc định 1 tiếng nếu người dùng không nói.
 - reschedule: nếu không có giờ mới -> "unclear" hỏi "Dời sang lúc nào?".
-- Chỉ điền field liên quan tới intent. Không rõ ý -> "unclear" + hỏi lại.`;
+- Chỉ điền field liên quan tới intent. Không rõ ý -> "unclear" + hỏi lại.
+- NGÔN NGỮ TRẢ LỜI: trường "reply" PHẢI viết bằng ${lang === 'en' ? 'TIẾNG ANH (English)' : 'TIẾNG VIỆT'}, dù người dùng gõ bằng ngôn ngữ nào. Các field khác giữ nguyên.`;
 
     try {
       const url = `https://generativelanguage.googleapis.com/v1beta/models/${this.MODEL}:generateContent`;
@@ -160,18 +182,18 @@ Quy tắc QUAN TRỌNG:
       }
 
       if (!ok) {
-        return { intent: 'unclear', reply: 'Trợ lý AI đang quá tải, bạn thử lại sau vài giây nhé.' };
+        return { intent: 'unclear', reply: lang === 'en' ? 'The AI Assistant is busy, please try again in a few seconds.' : 'Trợ lý AI đang quá tải, bạn thử lại sau vài giây nhé.' };
       }
 
       const raw: string | undefined = data?.candidates?.[0]?.content?.parts?.[0]?.text;
-      if (!raw) return { intent: 'unclear', reply: 'Xin lỗi, mình chưa hiểu ý bạn.' };
+      if (!raw) return { intent: 'unclear', reply: lang === 'en' ? "Sorry, I didn't understand that." : 'Xin lỗi, mình chưa hiểu ý bạn.' };
 
       const parsed = JSON.parse(raw) as AiParseResult;
-      if (!parsed?.intent) return { intent: 'unclear', reply: parsed?.reply || 'Xin lỗi, mình chưa hiểu ý bạn.' };
-      return this.enforceAiPermission(parsed, ai);
+      if (!parsed?.intent) return { intent: 'unclear', reply: parsed?.reply || (lang === 'en' ? "Sorry, I didn't understand that." : 'Xin lỗi, mình chưa hiểu ý bạn.') };
+      return this.enforceAiPermission(parsed, ai, lang);
     } catch (e) {
       this.logger.error('Lỗi gọi/parse Gemini', e as Error);
-      return { intent: 'unclear', reply: 'Xin lỗi, mình chưa xử lý được câu này. Thử diễn đạt khác nhé.' };
+      return { intent: 'unclear', reply: lang === 'en' ? 'Sorry, I could not process that. Try rephrasing.' : 'Xin lỗi, mình chưa xử lý được câu này. Thử diễn đạt khác nhé.' };
     }
   }
 }
