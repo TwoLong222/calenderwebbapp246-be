@@ -65,4 +65,10 @@ export class CreateEventDto {
   @Min(1)
   @Max(52)
   repeatCount?: number;
+
+  /** Nhắc trước bao nhiêu phút (null/không gửi = không nhắc). */
+  @IsOptional()
+  @IsInt()
+  @IsIn([5, 10, 15, 30, 60, 1440])
+  reminderMinutes?: number | null;
 }

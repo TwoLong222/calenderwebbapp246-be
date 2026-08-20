@@ -137,6 +137,7 @@ export class EventsService {
       is_all_day: dto.isAllDay ?? false,
       kind: dto.kind ?? 'event',
       color: dto.color ?? 'sky',
+      reminder_minutes: dto.reminderMinutes ?? null,
       series_id: seriesId,
       creator_id: userId,
       creator_email: userEmail || null,
@@ -194,11 +195,20 @@ export class EventsService {
     if (dto.isAllDay !== undefined) patch['is_all_day'] = dto.isAllDay;
     if (dto.kind !== undefined) patch['kind'] = dto.kind;
     if (dto.color !== undefined) patch['color'] = dto.color;
+    if (dto.reminderMinutes !== undefined) patch['reminder_minutes'] = dto.reminderMinutes;
 
     const { data: event, error } = await supabase.from('events').update(patch).eq('id', id).select().maybeSingle();
     if (error) throw error;
     // 0 dòng = RLS chặn (không phải chủ event) hoặc event không tồn tại
     if (!event) throw new ForbiddenException('Bạn không có quyền sửa sự kiện này.');
+
+    // Dời giờ hoặc đổi nhắc -> "arm" lại reminder (cho phép gửi nhắc lần nữa theo giờ mới).
+    if (dto.startTime !== undefined || dto.reminderMinutes !== undefined) {
+      await supabase
+        .from('event_attendees')
+        .update({ reminder_sent_at: null })
+        .eq('event_id', id);
+    }
 
     if (dto.guestEmails !== undefined) {
       const added = await this.syncAttendees(supabase, id, dto.guestEmails);
