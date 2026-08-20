@@ -157,6 +157,38 @@ export class MailService {
     this.logger.log(`Đã gửi email huỷ tới ${params.to} — "${params.eventTitle}"`);
   }
 
+  /** Xác nhận đặt lịch cho người vừa đặt. */
+  async sendBookingConfirmation(params: ReminderEmailParams): Promise<void> {
+    const timeLabel = this.formatTime(params.startTime);
+    await this.transporter.sendMail({
+      from: this.fromAddress,
+      to: params.to,
+      subject: `Xác nhận đặt lịch: ${params.eventTitle}`,
+      text: `Bạn đã đặt lịch "${params.eventTitle}" vào ${timeLabel}. Hẹn gặp bạn!`,
+      html: `<p>Bạn đã đặt lịch <strong>${params.eventTitle}</strong> vào <strong>${timeLabel}</strong>.</p><p>Hẹn gặp bạn!</p>`,
+    });
+    this.logger.log(`Đã gửi xác nhận đặt lịch tới ${params.to}`);
+  }
+
+  /** Báo cho CHỦ trang khi có người đặt lịch mới. */
+  async sendBookingNotification(params: {
+    to: string;
+    inviteeName: string;
+    inviteeEmail: string;
+    eventTitle: string;
+    startTime: string;
+  }): Promise<void> {
+    const timeLabel = this.formatTime(params.startTime);
+    await this.transporter.sendMail({
+      from: this.fromAddress,
+      to: params.to,
+      subject: `Đặt lịch mới: ${params.inviteeName}`,
+      text: `${params.inviteeName} (${params.inviteeEmail}) vừa đặt "${params.eventTitle}" vào ${timeLabel}.`,
+      html: `<p><strong>${params.inviteeName}</strong> (${params.inviteeEmail}) vừa đặt <strong>${params.eventTitle}</strong> vào <strong>${timeLabel}</strong>.</p>`,
+    });
+    this.logger.log(`Đã báo chủ trang ${params.to} về booking mới`);
+  }
+
   private formatTime(iso: string): string {
     return new Date(iso).toLocaleString('vi-VN', {
       weekday: 'long',

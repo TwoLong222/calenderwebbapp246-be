@@ -10,6 +10,7 @@ import { MailModule } from '../mail/mail.module';
 import { CommentsModule } from '../comments/comments.module';
 import { AiModule } from '../ai/ai.module';
 import { SettingsModule } from '../settings/settings.module';
+import { BookingModule } from '../booking/booking.module';
 
 @Module({
   imports: [
@@ -21,7 +22,8 @@ import { SettingsModule } from '../settings/settings.module';
     MailModule,
     CommentsModule,
     AiModule,
-    SettingsModule,],
+    SettingsModule,
+    BookingModule,],
   controllers: [AppController],
   providers: [AppService],
 })
