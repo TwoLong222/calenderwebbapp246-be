@@ -130,6 +130,43 @@ export class MailService {
     this.logger.log(`Đã gửi email mời tới ${params.to} — sự kiện "${params.eventTitle}"`);
   }
 
+  /** Email báo sự kiện được CẬP NHẬT (đổi giờ/tiêu đề/địa điểm) tới khách mời. */
+  async sendEventUpdated(params: ReminderEmailParams): Promise<void> {
+    const timeLabel = this.formatTime(params.startTime);
+    const loc = params.location ? ` tại <strong>${params.location}</strong>` : '';
+    await this.transporter.sendMail({
+      from: this.fromAddress,
+      to: params.to,
+      subject: `Cập nhật sự kiện: ${params.eventTitle}`,
+      text: `Sự kiện "${params.eventTitle}" vừa được cập nhật. Thời gian: ${timeLabel}${params.location ? ` tại ${params.location}` : ''}.`,
+      html: `<p>Sự kiện <strong>${params.eventTitle}</strong> vừa được cập nhật.</p><p>Thời gian mới: <strong>${timeLabel}</strong>${loc}.</p>`,
+    });
+    this.logger.log(`Đã gửi email cập nhật tới ${params.to} — "${params.eventTitle}"`);
+  }
+
+  /** Email báo sự kiện bị HUỶ tới khách mời. */
+  async sendEventCancelled(params: ReminderEmailParams): Promise<void> {
+    const timeLabel = this.formatTime(params.startTime);
+    await this.transporter.sendMail({
+      from: this.fromAddress,
+      to: params.to,
+      subject: `Huỷ sự kiện: ${params.eventTitle}`,
+      text: `Sự kiện "${params.eventTitle}" (${timeLabel}) đã bị huỷ.`,
+      html: `<p>Sự kiện <strong>${params.eventTitle}</strong> (${timeLabel}) đã bị <strong>huỷ</strong>.</p>`,
+    });
+    this.logger.log(`Đã gửi email huỷ tới ${params.to} — "${params.eventTitle}"`);
+  }
+
+  private formatTime(iso: string): string {
+    return new Date(iso).toLocaleString('vi-VN', {
+      weekday: 'long',
+      day: 'numeric',
+      month: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+  }
+
   /** Gửi 1 email test đơn giản — chỉ để kiểm tra cấu hình SMTP có hoạt động không. */
   async sendTestEmail(to: string): Promise<void> {
     await this.transporter.sendMail({

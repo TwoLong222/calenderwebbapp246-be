@@ -210,6 +210,26 @@ export class EventsService {
         .eq('event_id', id);
     }
 
+    // Đổi giờ/tiêu đề/địa điểm -> báo email CẬP NHẬT cho khách hiện có (tôn trọng preference).
+    const meaningfulChange =
+      dto.startTime !== undefined ||
+      dto.endTime !== undefined ||
+      dto.title !== undefined ||
+      dto.location !== undefined;
+    if (meaningfulChange) {
+      const current = await this.getAttendees(supabase, id);
+      for (const a of current) {
+        if (await this.settings.isEmailEnabledForEmail(a.email, 'event_updated')) {
+          void this.mail.sendEventUpdated({
+            to: a.email,
+            eventTitle: event.title,
+            startTime: event.start_time,
+            location: event.location ?? null,
+          });
+        }
+      }
+    }
+
     if (dto.guestEmails !== undefined) {
       const added = await this.syncAttendees(supabase, id, dto.guestEmails);
       // Gửi email mời NGẦM cho khách MỚI thêm (không await -> phản hồi ngay, không chờ SMTP)
@@ -227,23 +247,47 @@ export class EventsService {
   /** XÓA MỀM: đưa vào thùng rác (đặt deleted_at = now). Không mất dữ liệu, có thể khôi phục. */
   async deleteEvent(supabase: SupabaseClient, id: string, scope: 'single' | 'series' = 'single') {
     const deletedAt = new Date().toISOString();
-    // Xóa cả chuỗi lặp: tìm series_id của event rồi đánh dấu mọi event cùng series_id
-    if (scope === 'series') {
-      const { data: ev } = await supabase.from('events').select('series_id').eq('id', id).single();
-      if (ev?.series_id) {
-        const { error } = await supabase
-          .from('events')
-          .update({ deleted_at: deletedAt })
-          .eq('series_id', ev.series_id)
-          .is('deleted_at', null);
-        if (error) throw error;
-        return { seriesId: ev.series_id };
-      }
+    // Lấy thông tin sự kiện + khách mời TRƯỚC khi xóa mềm để còn gửi email huỷ.
+    const { data: ev } = await supabase
+      .from('events')
+      .select('series_id, title, start_time, location')
+      .eq('id', id)
+      .maybeSingle();
+    const attendees = await this.getAttendees(supabase, id);
+
+    if (scope === 'series' && ev?.series_id) {
+      const { error } = await supabase
+        .from('events')
+        .update({ deleted_at: deletedAt })
+        .eq('series_id', ev.series_id)
+        .is('deleted_at', null);
+      if (error) throw error;
+      void this.notifyCancelled(attendees, ev);
+      return { seriesId: ev.series_id };
     }
     // Mặc định: chỉ đưa 1 event vào thùng rác
     const { error } = await supabase.from('events').update({ deleted_at: deletedAt }).eq('id', id);
     if (error) throw error;
+    void this.notifyCancelled(attendees, ev);
     return { id };
+  }
+
+  /** Gửi email HUỶ cho từng khách mời có bật preference 'event_cancelled'. */
+  private async notifyCancelled(
+    attendees: { email: string }[],
+    ev: { title?: string; start_time?: string; location?: string | null } | null,
+  ): Promise<void> {
+    if (!ev) return;
+    for (const a of attendees) {
+      if (await this.settings.isEmailEnabledForEmail(a.email, 'event_cancelled')) {
+        void this.mail.sendEventCancelled({
+          to: a.email,
+          eventTitle: ev.title ?? '',
+          startTime: ev.start_time ?? new Date().toISOString(),
+          location: ev.location ?? null,
+        });
+      }
+    }
   }
 
   /** KHÔI PHỤC 1 sự kiện từ thùng rác (đặt lại deleted_at = null) */
