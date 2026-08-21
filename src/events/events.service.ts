@@ -61,7 +61,9 @@ export class EventsService {
       .order('start_time', { ascending: true });
 
     if (error) throw error;
-    return data;
+    // Lịch CÁ NHÂN không hiển thị sự kiện NHÓM (group_id != null) — nhóm có endpoint riêng.
+    // Lọc ở JS để không phụ thuộc cột group_id đã tồn tại (an toàn nếu chưa chạy migration Phase 7).
+    return (data ?? []).filter((e: any) => !e.group_id);
   }
 
   /** Liệt kê các sự kiện của CHÍNH user đang trong thùng rác (mới xóa lên đầu) */
