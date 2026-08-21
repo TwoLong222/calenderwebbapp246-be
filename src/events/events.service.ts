@@ -204,6 +204,7 @@ export class EventsService {
     if (dto.kind !== undefined) patch['kind'] = dto.kind;
     if (dto.color !== undefined) patch['color'] = dto.color;
     if (typeof dto.reminderMinutes === 'number') patch['reminder_minutes'] = dto.reminderMinutes;
+    if (typeof dto.completed === 'boolean') patch['completed'] = dto.completed;
 
     const { data: event, error } = await supabase.from('events').update(patch).eq('id', id).select().maybeSingle();
     if (error) throw error;

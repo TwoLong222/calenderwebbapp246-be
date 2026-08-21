@@ -71,4 +71,9 @@ export class CreateEventDto {
   @IsInt()
   @IsIn([5, 10, 15, 30, 60, 1440])
   reminderMinutes?: number | null;
+
+  /** Task đã hoàn thành hay chưa. */
+  @IsOptional()
+  @IsBoolean()
+  completed?: boolean;
 }
