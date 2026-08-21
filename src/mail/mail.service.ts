@@ -60,17 +60,19 @@ export class MailService {
       minute: '2-digit',
     });
 
+    // Sự kiện không đặt tên -> hiện "(không tiêu đề)" cho khớp thông báo trong app.
+    const title = params.eventTitle?.trim() || '(không tiêu đề)';
     const locationLine = params.location ? ` tại <strong>${params.location}</strong>` : '';
 
     await this.transporter.sendMail({
       from: this.fromAddress,
       to: params.to,
-      subject: `Nhắc lịch: ${params.eventTitle}`,
-      text: `Sự kiện "${params.eventTitle}" sẽ bắt đầu vào ${timeLabel}${params.location ? ` tại ${params.location}` : ''}.`,
-      html: `<p>Sự kiện <strong>${params.eventTitle}</strong> sẽ bắt đầu vào <strong>${timeLabel}</strong>${locationLine}.</p>`,
+      subject: `Nhắc lịch: ${title}`,
+      text: `Sự kiện "${title}" sẽ bắt đầu vào ${timeLabel}${params.location ? ` tại ${params.location}` : ''}.`,
+      html: `<p>Sự kiện <strong>${title}</strong> sẽ bắt đầu vào <strong>${timeLabel}</strong>${locationLine}.</p>`,
     });
 
-    this.logger.log(`Đã gửi email nhắc lịch tới ${params.to} — sự kiện "${params.eventTitle}"`);
+    this.logger.log(`Đã gửi email nhắc lịch tới ${params.to} — sự kiện "${title}"`);
   }
 
   /** Gửi email MỜI tham gia event, kèm 2 nút Đồng ý/Từ chối bấm ngay trong mail (không cần đăng nhập). */
