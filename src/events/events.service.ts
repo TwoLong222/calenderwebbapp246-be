@@ -110,12 +110,17 @@ export class EventsService {
   }
 
   /** Dời 1 mốc thời gian ISO theo chu kỳ lặp cho lần thứ i (i=0 là lần gốc) */
-  private shiftDate(iso: string, repeat: 'none' | 'daily' | 'weekly' | 'monthly', i: number): string {
+  private shiftDate(
+    iso: string,
+    repeat: 'none' | 'daily' | 'weekly' | 'monthly',
+    i: number,
+    interval = 1,
+  ): string {
     const d = new Date(iso);
     if (i === 0 || repeat === 'none') return d.toISOString();
-    if (repeat === 'daily') d.setDate(d.getDate() + i);
-    else if (repeat === 'weekly') d.setDate(d.getDate() + i * 7);
-    else if (repeat === 'monthly') d.setMonth(d.getMonth() + i);
+    if (repeat === 'daily') d.setDate(d.getDate() + i * interval);
+    else if (repeat === 'weekly') d.setDate(d.getDate() + i * 7 * interval);
+    else if (repeat === 'monthly') d.setMonth(d.getMonth() + i * interval);
     return d.toISOString();
   }
 
@@ -124,6 +129,7 @@ export class EventsService {
     const repeat = dto.repeat ?? 'none';
     // Số lần lặp: 'none' -> 1, còn lại lấy repeatCount (chặn trong [1, 52])
     const count = repeat === 'none' ? 1 : Math.min(Math.max(dto.repeatCount ?? 1, 1), 52);
+    const interval = Math.min(Math.max(dto.repeatInterval ?? 1, 1), 30);
 
     // Cảnh báo trùng lịch tính cho lần ĐẦU, TRƯỚC khi insert (để không tự trùng chính event vừa tạo)
     const conflicts = dto.isAllDay
@@ -139,8 +145,8 @@ export class EventsService {
       title: dto.title,
       description: dto.description ?? null,
       location: dto.location ?? null,
-      start_time: this.shiftDate(dto.startTime, repeat, i),
-      end_time: this.shiftDate(dto.endTime, repeat, i),
+      start_time: this.shiftDate(dto.startTime, repeat, i, interval),
+      end_time: this.shiftDate(dto.endTime, repeat, i, interval),
       is_all_day: dto.isAllDay ?? false,
       kind: dto.kind ?? 'event',
       color: dto.color ?? 'sky',
