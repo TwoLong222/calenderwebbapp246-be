@@ -180,6 +180,13 @@ export class EventsService {
       }
     }
 
+    // Có đặt nhắc -> tự thêm chính người tạo vào danh sách để nhận email nhắc (mọi lần lặp).
+    if (typeof dto.reminderMinutes === 'number') {
+      for (const ev of events) {
+        await this.ensureCreatorAttendee(supabase, ev.id, userEmail);
+      }
+    }
+
     const attendees = await this.getAttendees(supabase, first.id);
     return { event: { ...first, attendees }, conflicts };
   }
@@ -253,6 +260,12 @@ export class EventsService {
         startTime: event.start_time,
         location: event.location ?? null,
       });
+    }
+
+    // Nếu sự kiện có đặt nhắc, đảm bảo người tạo vẫn trong danh sách nhắc (kể cả sau khi
+    // syncAttendees có thể đã loại bỏ họ khỏi danh sách khách mời gửi lên từ frontend).
+    if (event.reminder_minutes != null) {
+      await this.ensureCreatorAttendee(supabase, id, event.creator_email);
     }
 
     const attendees = await this.getAttendees(supabase, id);
@@ -350,6 +363,28 @@ export class EventsService {
     const { data, error } = await supabase.from('event_attendees').select('*').eq('event_id', eventId);
     if (error) throw error;
     return data ?? [];
+  }
+
+  /**
+   * Đảm bảo NGƯỜI TẠO có mặt trong danh sách khách mời (status 'accepted') để tự nhận email
+   * nhắc lịch — kể cả khi sự kiện không mời ai khác. KHÔNG gửi email mời cho chính mình.
+   * Bỏ qua nếu đã có (dùng lại record cũ, giữ nguyên trạng thái RSVP).
+   */
+  private async ensureCreatorAttendee(
+    supabase: SupabaseClient,
+    eventId: string,
+    creatorEmail: string | null | undefined,
+  ) {
+    const email = (creatorEmail ?? '').trim();
+    if (!email) return;
+    const { data: existing } = await supabase
+      .from('event_attendees')
+      .select('email')
+      .eq('event_id', eventId);
+    const has = (existing ?? []).some((a) => a.email.toLowerCase() === email.toLowerCase());
+    if (has) return;
+    // status 'accepted' -> không cần RSVP; không có respond_token -> không phải khách mời "thật".
+    await supabase.from('event_attendees').insert({ event_id: eventId, email, status: 'accepted' });
   }
 
   /**
