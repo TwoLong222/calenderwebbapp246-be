@@ -11,6 +11,7 @@ import { CommentsModule } from '../comments/comments.module';
 import { AiModule } from '../ai/ai.module';
 import { SettingsModule } from '../settings/settings.module';
 import { BookingModule } from '../booking/booking.module';
+import { SharingModule } from '../sharing/sharing.module';
 
 @Module({
   imports: [
@@ -23,7 +24,8 @@ import { BookingModule } from '../booking/booking.module';
     CommentsModule,
     AiModule,
     SettingsModule,
-    BookingModule,],
+    BookingModule,
+    SharingModule,],
   controllers: [AppController],
   providers: [AppService],
 })

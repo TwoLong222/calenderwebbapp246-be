@@ -44,8 +44,15 @@ export class EventsService {
     private readonly settings: SettingsService,
   ) {}
 
-  private async getPrimaryCalendarId(supabase: SupabaseClient): Promise<string> {
-    const { data, error } = await supabase.from('calendars').select('id').eq('is_primary', true).single();
+  private async getPrimaryCalendarId(supabase: SupabaseClient, userId: string): Promise<string> {
+    // PHASE 6D: lọc thêm owner_id — vì sau khi chia sẻ lịch, RLS còn trả các lịch
+    // được chia sẻ cho mình (có thể is_primary=true) -> .single() sẽ vỡ nếu không lọc.
+    const { data, error } = await supabase
+      .from('calendars')
+      .select('id')
+      .eq('is_primary', true)
+      .eq('owner_id', userId)
+      .single();
 
     if (error || !data) {
       throw new Error('Không tìm thấy Lịch chính của người dùng này.');
@@ -113,7 +120,7 @@ export class EventsService {
   }
 
   async createEvent(supabase: SupabaseClient, userId: string, userEmail: string, dto: CreateEventDto) {
-    const calendarId = await this.getPrimaryCalendarId(supabase);
+    const calendarId = await this.getPrimaryCalendarId(supabase, userId);
     const repeat = dto.repeat ?? 'none';
     // Số lần lặp: 'none' -> 1, còn lại lấy repeatCount (chặn trong [1, 52])
     const count = repeat === 'none' ? 1 : Math.min(Math.max(dto.repeatCount ?? 1, 1), 52);
@@ -137,7 +144,8 @@ export class EventsService {
       is_all_day: dto.isAllDay ?? false,
       kind: dto.kind ?? 'event',
       color: dto.color ?? 'sky',
-      reminder_minutes: dto.reminderMinutes ?? null,
+      // Chỉ set khi là số -> tránh lỗi nếu DB chưa chạy migration reminder_minutes.
+      ...(typeof dto.reminderMinutes === 'number' ? { reminder_minutes: dto.reminderMinutes } : {}),
       series_id: seriesId,
       creator_id: userId,
       creator_email: userEmail || null,
@@ -195,7 +203,7 @@ export class EventsService {
     if (dto.isAllDay !== undefined) patch['is_all_day'] = dto.isAllDay;
     if (dto.kind !== undefined) patch['kind'] = dto.kind;
     if (dto.color !== undefined) patch['color'] = dto.color;
-    if (dto.reminderMinutes !== undefined) patch['reminder_minutes'] = dto.reminderMinutes;
+    if (typeof dto.reminderMinutes === 'number') patch['reminder_minutes'] = dto.reminderMinutes;
 
     const { data: event, error } = await supabase.from('events').update(patch).eq('id', id).select().maybeSingle();
     if (error) throw error;
