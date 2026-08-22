@@ -238,6 +238,122 @@ export class GroupsService {
     return { id: eventId };
   }
 
+  // ============================ CHAT NHÓM ============================
+
+  /** Lịch sử tin nhắn của nhóm, cũ -> mới. `before` (ISO timestamp) để phân trang lùi về quá khứ. */
+  async listMessages(supabase: SupabaseClient, groupId: string, before?: string, limit = 50) {
+    let q = supabase
+      .from('group_messages')
+      .select('*')
+      .eq('group_id', groupId)
+      .order('created_at', { ascending: false })
+      .limit(limit);
+    if (before) q = q.lt('created_at', before);
+
+    const { data, error } = await q;
+    if (error) throw error;
+    return (data ?? []).reverse();
+  }
+
+  /** Gửi 1 tin nhắn vào nhóm. RLS (group_messages) tự chặn nếu user không phải thành viên đã tham gia. */
+  async sendMessage(supabase: SupabaseClient, groupId: string, userId: string, userEmail: string, content: string) {
+    const { data, error } = await supabase
+      .from('group_messages')
+      .insert({ group_id: groupId, sender_id: userId, sender_email: userEmail || null, content })
+      .select('*')
+      .single();
+    if (error) throw error;
+    return data;
+  }
+
+  /** Sửa nội dung 1 tin nhắn — RLS chỉ cho người gửi sửa tin của chính mình (và tin chưa thu hồi). */
+  async editMessage(supabase: SupabaseClient, groupId: string, messageId: string, content: string) {
+    const { data, error } = await supabase
+      .from('group_messages')
+      .update({ content, edited_at: new Date().toISOString() })
+      .eq('id', messageId)
+      .eq('group_id', groupId)
+      .is('deleted_at', null)
+      .select('*')
+      .maybeSingle();
+    if (error) throw error;
+    if (!data) throw new ForbiddenException('Bạn chỉ sửa được tin nhắn của chính mình.');
+    return data;
+  }
+
+  /** Thu hồi 1 tin nhắn (soft delete): đánh dấu deleted_at + xóa nội dung. RLS: chỉ người gửi. */
+  async deleteMessage(supabase: SupabaseClient, groupId: string, messageId: string) {
+    const { data, error } = await supabase
+      .from('group_messages')
+      .update({ deleted_at: new Date().toISOString(), content: '' })
+      .eq('id', messageId)
+      .eq('group_id', groupId)
+      .select('*')
+      .maybeSingle();
+    if (error) throw error;
+    if (!data) throw new ForbiddenException('Bạn chỉ thu hồi được tin nhắn của chính mình.');
+    return data;
+  }
+
+  /** Đánh dấu đã đọc tới thời điểm hiện tại cho user trong 1 nhóm (upsert mốc đã đọc). */
+  async markRead(supabase: SupabaseClient, groupId: string, userId: string) {
+    const { error } = await supabase
+      .from('group_message_reads')
+      .upsert(
+        { group_id: groupId, user_id: userId, last_read_at: new Date().toISOString() },
+        { onConflict: 'group_id,user_id' },
+      );
+    if (error) throw error;
+    return { ok: true };
+  }
+
+  /**
+   * Số tin CHƯA ĐỌC của user cho từng nhóm mình thuộc về.
+   * Chưa đọc = tin created_at > mốc đã đọc, KHÔNG phải do chính mình gửi, và chưa bị thu hồi.
+   * Nhóm chưa có mốc đã đọc -> tính mọi tin của người khác.
+   */
+  async getUnreadCounts(supabase: SupabaseClient, userId: string): Promise<Record<string, number>> {
+    const { data: groups } = await supabase.from('groups').select('id');
+    const ids = (groups ?? []).map((g) => g.id as string);
+    if (!ids.length) return {};
+
+    const { data: reads } = await supabase
+      .from('group_message_reads')
+      .select('group_id, last_read_at')
+      .eq('user_id', userId);
+    const readMap = new Map<string, string>();
+    for (const r of reads ?? []) readMap.set(r.group_id, r.last_read_at);
+
+    const entries = await Promise.all(
+      ids.map(async (groupId) => {
+        let q = supabase
+          .from('group_messages')
+          .select('id', { count: 'exact', head: true })
+          .eq('group_id', groupId)
+          .is('deleted_at', null)
+          .neq('sender_id', userId);
+        const lastRead = readMap.get(groupId);
+        if (lastRead) q = q.gt('created_at', lastRead);
+        const { count } = await q;
+        return [groupId, count ?? 0] as const;
+      }),
+    );
+    const out: Record<string, number> = {};
+    for (const [groupId, count] of entries) if (count > 0) out[groupId] = count;
+    return out;
+  }
+
+  /** user_id (đã tham gia) của mọi thành viên nhóm — dùng để báo realtime "groups:changed". */
+  async listMemberUserIds(groupId: string): Promise<string[]> {
+    const { data } = await this.admin
+      .from('group_members')
+      .select('user_id')
+      .eq('group_id', groupId)
+      .not('user_id', 'is', null)
+      .not('joined_at', 'is', null);
+    return (data ?? []).map((m) => m.user_id as string);
+  }
+
   // ============================ HỖ TRỢ ============================
 
   private async getGroupCalendarId(supabase: SupabaseClient, groupId: string): Promise<string> {

@@ -14,11 +14,13 @@ function makeBuilder(result: Result = { data: null, error: null }) {
     select: jest.fn(() => builder),
     eq: jest.fn(() => builder),
     neq: jest.fn(() => builder),
+    not: jest.fn(() => builder),
     order: jest.fn(() => builder),
     in: jest.fn(() => builder),
     is: jest.fn(() => builder),
     lt: jest.fn(() => builder),
     gt: jest.fn(() => builder),
+    limit: jest.fn(() => builder),
     insert: jest.fn(() => builder),
     update: jest.fn(() => builder),
     upsert: jest.fn(() => builder),
@@ -303,6 +305,186 @@ describe('GroupsService', () => {
       expect(adminFrom).toHaveBeenNthCalledWith(3, 'calendars');
       expect(deleteCalBuilder.delete).toHaveBeenCalled();
       expect(result).toEqual({ ok: true });
+    });
+  });
+
+  describe('listMemberUserIds', () => {
+    it('chỉ lấy user_id của thành viên ĐÃ tham gia (bỏ lời mời chưa joined_at, bỏ user_id null)', async () => {
+      const builder = makeBuilder({
+        data: [{ user_id: 'user-1' }, { user_id: 'user-2' }],
+        error: null,
+      });
+      adminFrom.mockReturnValueOnce(builder);
+
+      const result = await service.listMemberUserIds('grp-1');
+
+      expect(adminFrom).toHaveBeenCalledWith('group_members');
+      expect(builder.eq).toHaveBeenCalledWith('group_id', 'grp-1');
+      expect(result).toEqual(['user-1', 'user-2']);
+    });
+
+    it('trả về mảng rỗng khi không có thành viên nào', async () => {
+      adminFrom.mockReturnValueOnce(makeBuilder({ data: [], error: null }));
+
+      const result = await service.listMemberUserIds('grp-1');
+
+      expect(result).toEqual([]);
+    });
+  });
+
+  describe('listMessages', () => {
+    it('trả về tin nhắn theo thứ tự cũ -> mới (đảo ngược kết quả DESC từ DB)', async () => {
+      const messages = [
+        { id: 'm3', content: 'ba', created_at: '2026-08-21T10:02:00Z' },
+        { id: 'm2', content: 'hai', created_at: '2026-08-21T10:01:00Z' },
+        { id: 'm1', content: 'một', created_at: '2026-08-21T10:00:00Z' },
+      ];
+      const builder = makeBuilder({ data: messages, error: null });
+      userFrom.mockReturnValueOnce(builder);
+
+      const result = await service.listMessages(userClient(), 'grp-1');
+
+      expect(userFrom).toHaveBeenCalledWith('group_messages');
+      expect(builder.eq).toHaveBeenCalledWith('group_id', 'grp-1');
+      expect(builder.limit).toHaveBeenCalledWith(50);
+      expect(result.map((m: any) => m.id)).toEqual(['m1', 'm2', 'm3']);
+    });
+
+    it('lọc theo before khi có phân trang lùi về quá khứ', async () => {
+      const builder = makeBuilder({ data: [], error: null });
+      userFrom.mockReturnValueOnce(builder);
+
+      await service.listMessages(userClient(), 'grp-1', '2026-08-21T10:00:00Z', 20);
+
+      expect(builder.lt).toHaveBeenCalledWith('created_at', '2026-08-21T10:00:00Z');
+      expect(builder.limit).toHaveBeenCalledWith(20);
+    });
+
+    it('ném lỗi khi truy vấn thất bại (vd RLS chặn vì không phải thành viên)', async () => {
+      const dbErr = new Error('permission denied');
+      userFrom.mockReturnValueOnce(makeBuilder({ data: null, error: dbErr }));
+
+      await expect(service.listMessages(userClient(), 'grp-1')).rejects.toThrow(dbErr);
+    });
+  });
+
+  describe('sendMessage', () => {
+    it('lưu tin nhắn với đúng sender_id/email và group_id', async () => {
+      const saved = { id: 'm1', group_id: 'grp-1', sender_id: 'user-1', sender_email: 'a@b.com', content: 'Chào cả nhóm' };
+      const builder = makeBuilder({ data: saved, error: null });
+      userFrom.mockReturnValueOnce(builder);
+
+      const result = await service.sendMessage(userClient(), 'grp-1', 'user-1', 'a@b.com', 'Chào cả nhóm');
+
+      expect(userFrom).toHaveBeenCalledWith('group_messages');
+      expect(builder.insert).toHaveBeenCalledWith({
+        group_id: 'grp-1',
+        sender_id: 'user-1',
+        sender_email: 'a@b.com',
+        content: 'Chào cả nhóm',
+      });
+      expect(result).toEqual(saved);
+    });
+
+    it('ném lỗi khi RLS chặn (user không phải thành viên đã tham gia)', async () => {
+      const dbErr = new Error('new row violates row-level security policy');
+      userFrom.mockReturnValueOnce(makeBuilder({ data: null, error: dbErr }));
+
+      await expect(
+        service.sendMessage(userClient(), 'grp-1', 'stranger-1', 'x@y.com', 'xin chào'),
+      ).rejects.toThrow(dbErr);
+    });
+  });
+
+  describe('editMessage', () => {
+    it('cập nhật nội dung + đặt edited_at cho tin của chính mình', async () => {
+      const saved = { id: 'm1', content: 'đã sửa', edited_at: '2026-08-21T10:05:00Z' };
+      const builder = makeBuilder({ data: saved, error: null });
+      userFrom.mockReturnValueOnce(builder);
+
+      const result = await service.editMessage(userClient(), 'grp-1', 'm1', 'đã sửa');
+
+      expect(userFrom).toHaveBeenCalledWith('group_messages');
+      expect(builder.update).toHaveBeenCalledWith(
+        expect.objectContaining({ content: 'đã sửa', edited_at: expect.any(String) }),
+      );
+      expect(builder.eq).toHaveBeenCalledWith('id', 'm1');
+      expect(builder.eq).toHaveBeenCalledWith('group_id', 'grp-1');
+      expect(result).toEqual(saved);
+    });
+
+    it('ném ForbiddenException khi không có dòng nào bị sửa (tin của người khác/đã thu hồi)', async () => {
+      userFrom.mockReturnValueOnce(makeBuilder({ data: null, error: null }));
+
+      await expect(service.editMessage(userClient(), 'grp-1', 'm1', 'x')).rejects.toThrow(ForbiddenException);
+    });
+  });
+
+  describe('deleteMessage', () => {
+    it('soft delete: đặt deleted_at + xóa nội dung tin của chính mình', async () => {
+      const saved = { id: 'm1', content: '', deleted_at: '2026-08-21T10:06:00Z' };
+      const builder = makeBuilder({ data: saved, error: null });
+      userFrom.mockReturnValueOnce(builder);
+
+      const result = await service.deleteMessage(userClient(), 'grp-1', 'm1');
+
+      expect(builder.update).toHaveBeenCalledWith(
+        expect.objectContaining({ deleted_at: expect.any(String), content: '' }),
+      );
+      expect(result).toEqual(saved);
+    });
+
+    it('ném ForbiddenException khi thu hồi tin không phải của mình', async () => {
+      userFrom.mockReturnValueOnce(makeBuilder({ data: null, error: null }));
+
+      await expect(service.deleteMessage(userClient(), 'grp-1', 'm1')).rejects.toThrow(ForbiddenException);
+    });
+  });
+
+  describe('markRead', () => {
+    it('upsert mốc đã đọc theo (group_id, user_id)', async () => {
+      const builder = makeBuilder({ error: null });
+      userFrom.mockReturnValueOnce(builder);
+
+      const result = await service.markRead(userClient(), 'grp-1', 'user-1');
+
+      expect(userFrom).toHaveBeenCalledWith('group_message_reads');
+      expect(builder.upsert).toHaveBeenCalledWith(
+        expect.objectContaining({ group_id: 'grp-1', user_id: 'user-1', last_read_at: expect.any(String) }),
+        { onConflict: 'group_id,user_id' },
+      );
+      expect(result).toEqual({ ok: true });
+    });
+  });
+
+  describe('getUnreadCounts', () => {
+    it('đếm tin chưa đọc theo từng nhóm, dùng mốc đã đọc nếu có; bỏ nhóm có count 0', async () => {
+      // 1) groups
+      userFrom.mockReturnValueOnce(makeBuilder({ data: [{ id: 'g1' }, { id: 'g2' }], error: null }));
+      // 2) reads (chỉ g1 có mốc đã đọc)
+      userFrom.mockReturnValueOnce(
+        makeBuilder({ data: [{ group_id: 'g1', last_read_at: '2026-08-21T10:00:00Z' }], error: null }),
+      );
+      // 3) count cho g1 (có mốc -> dùng gt), 4) count cho g2 (không mốc)
+      const g1Builder = makeBuilder({ count: 2 });
+      const g2Builder = makeBuilder({ count: 0 });
+      userFrom.mockReturnValueOnce(g1Builder).mockReturnValueOnce(g2Builder);
+
+      const result = await service.getUnreadCounts(userClient(), 'user-1');
+
+      expect(g1Builder.gt).toHaveBeenCalledWith('created_at', '2026-08-21T10:00:00Z');
+      expect(g1Builder.neq).toHaveBeenCalledWith('sender_id', 'user-1');
+      expect(g2Builder.gt).not.toHaveBeenCalled();
+      expect(result).toEqual({ g1: 2 }); // g2 count 0 -> không xuất hiện
+    });
+
+    it('trả về object rỗng khi user chưa thuộc nhóm nào', async () => {
+      userFrom.mockReturnValueOnce(makeBuilder({ data: [], error: null }));
+
+      const result = await service.getUnreadCounts(userClient(), 'user-1');
+
+      expect(result).toEqual({});
+      expect(userFrom).toHaveBeenCalledTimes(1);
     });
   });
 });

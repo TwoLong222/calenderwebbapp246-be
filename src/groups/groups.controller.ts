@@ -11,6 +11,7 @@ import { CreateGroupDto } from './dto/create-group.dto';
 import { InviteMemberDto } from './dto/invite-member.dto';
 import { JoinGroupDto } from './dto/join-group.dto';
 import { CreateGroupEventDto, UpdateGroupEventDto } from './dto/group-event.dto';
+import { SendMessageDto } from './dto/send-message.dto';
 
 @UseGuards(SupabaseAuthGuard)
 @Controller('groups')
@@ -26,9 +27,18 @@ export class GroupsController {
     return this.groups.listMyGroups(req.supabase, user.id);
   }
 
+  /** Số tin CHƯA ĐỌC theo từng nhóm { groupId: count } — cho badge ở sidebar.
+   *  Đặt TRƯỚC route ':id' và dùng 2 đoạn 'chat/unread' để không đụng với GET :id. */
+  @Get('chat/unread')
+  unread(@Req() req: any, @CurrentUser() user: User) {
+    return this.groups.getUnreadCounts(req.supabase, user.id);
+  }
+
   @Post()
-  create(@Req() req: any, @CurrentUser() user: User, @Body() dto: CreateGroupDto) {
-    return this.groups.createGroup(req.supabase, user.id, user.email ?? '', dto.name);
+  async create(@Req() req: any, @CurrentUser() user: User, @Body() dto: CreateGroupDto) {
+    const group = await this.groups.createGroup(req.supabase, user.id, user.email ?? '', dto.name);
+    this.gateway.notifyGroupsChanged([user.id]);
+    return group;
   }
 
   /** Kích hoạt các lời mời gửi theo email của user hiện tại (gọi khi mở app). */
@@ -38,8 +48,10 @@ export class GroupsController {
   }
 
   @Post('join')
-  join(@CurrentUser() user: User, @Body() dto: JoinGroupDto) {
-    return this.groups.joinByCode(dto.code, user.id, user.email ?? '');
+  async join(@CurrentUser() user: User, @Body() dto: JoinGroupDto) {
+    const group = await this.groups.joinByCode(dto.code, user.id, user.email ?? '');
+    this.gateway.notifyGroupsChanged(await this.groups.listMemberUserIds(group.id));
+    return group;
   }
 
   @Get(':id')
@@ -48,18 +60,26 @@ export class GroupsController {
   }
 
   @Post(':id/invite')
-  invite(@Req() req: any, @CurrentUser() user: User, @Param('id') id: string, @Body() dto: InviteMemberDto) {
-    return this.groups.invite(req.supabase, user.id, id, dto.email);
+  async invite(@Req() req: any, @CurrentUser() user: User, @Param('id') id: string, @Body() dto: InviteMemberDto) {
+    const res = await this.groups.invite(req.supabase, user.id, id, dto.email);
+    this.gateway.notifyGroupsChanged(await this.groups.listMemberUserIds(id));
+    return res;
   }
 
   @Delete(':id/members')
-  removeMember(@Req() req: any, @CurrentUser() user: User, @Param('id') id: string, @Query('email') email: string) {
-    return this.groups.removeMember(req.supabase, user.id, id, email);
+  async removeMember(@Req() req: any, @CurrentUser() user: User, @Param('id') id: string, @Query('email') email: string) {
+    const memberIds = await this.groups.listMemberUserIds(id);
+    const res = await this.groups.removeMember(req.supabase, user.id, id, email);
+    this.gateway.notifyGroupsChanged(memberIds); // gồm cả người vừa bị xóa -> tab của họ tự ẩn nhóm
+    return res;
   }
 
   @Delete(':id')
-  remove(@Req() req: any, @CurrentUser() user: User, @Param('id') id: string) {
-    return this.groups.deleteGroup(req.supabase, user.id, id);
+  async remove(@Req() req: any, @CurrentUser() user: User, @Param('id') id: string) {
+    const memberIds = await this.groups.listMemberUserIds(id);
+    const res = await this.groups.deleteGroup(req.supabase, user.id, id);
+    this.gateway.notifyGroupsChanged(memberIds);
+    return res;
   }
 
   // ---------- Sự kiện nhóm ----------
@@ -97,5 +117,51 @@ export class GroupsController {
     const res = await this.groups.deleteEvent(req.supabase, id, eventId);
     this.gateway.emitToGroup(id, 'deleted', { id: eventId });
     return res;
+  }
+
+  // ---------- Chat nhóm ----------
+  /** Lịch sử tin nhắn (cũ -> mới). ?before=<ISO timestamp> để lấy trang cũ hơn, ?limit=<n> (mặc định 50). */
+  @Get(':id/messages')
+  listMessages(
+    @Req() req: any,
+    @Param('id') id: string,
+    @Query('before') before?: string,
+    @Query('limit') limit?: string,
+  ) {
+    return this.groups.listMessages(req.supabase, id, before, limit ? Number(limit) : undefined);
+  }
+
+  @Post(':id/messages')
+  async sendMessage(@Req() req: any, @CurrentUser() user: User, @Param('id') id: string, @Body() dto: SendMessageDto) {
+    const message = await this.groups.sendMessage(req.supabase, id, user.id, user.email ?? '', dto.content);
+    this.gateway.emitMessage(id, message);
+    return message;
+  }
+
+  /** Sửa nội dung 1 tin nhắn của chính mình. */
+  @Patch(':id/messages/:messageId')
+  async editMessage(
+    @Req() req: any,
+    @Param('id') id: string,
+    @Param('messageId') messageId: string,
+    @Body() dto: SendMessageDto,
+  ) {
+    const message = await this.groups.editMessage(req.supabase, id, messageId, dto.content);
+    this.gateway.emitMessageUpdate(id, message);
+    return message;
+  }
+
+  /** Thu hồi 1 tin nhắn của chính mình (soft delete). */
+  @Delete(':id/messages/:messageId')
+  async deleteMessage(@Req() req: any, @Param('id') id: string, @Param('messageId') messageId: string) {
+    const message = await this.groups.deleteMessage(req.supabase, id, messageId);
+    this.gateway.emitMessageDelete(id, message);
+    return message;
+  }
+
+  /** Đánh dấu đã đọc tới hiện tại cho nhóm này. */
+  @Post(':id/messages/read')
+  markRead(@Req() req: any, @CurrentUser() user: User, @Param('id') id: string) {
+    return this.groups.markRead(req.supabase, id, user.id);
   }
 }

@@ -18,6 +18,7 @@ import {
 } from '@nestjs/websockets';
 import type { Server, Socket } from 'socket.io';
 import { SupabaseService } from '../supabase/supabase.service';
+import { GroupsService } from './groups.service';
 
 interface SocketUser {
   id: string;
@@ -28,9 +29,12 @@ interface SocketUser {
 export class SchedulingGateway implements OnGatewayConnection, OnGatewayDisconnect {
   @WebSocketServer() server!: Server;
 
-  constructor(private readonly supabaseService: SupabaseService) {}
+  constructor(
+    private readonly supabaseService: SupabaseService,
+    private readonly groupsService: GroupsService,
+  ) {}
 
-  /** Xác thực token ngay khi kết nối; lưu user vào socket.data. */
+  /** Xác thực token ngay khi kết nối; lưu user + token vào socket.data. */
   async handleConnection(client: Socket): Promise<void> {
     const token = (client.handshake.auth?.token as string) || '';
     if (!token) {
@@ -43,6 +47,11 @@ export class SchedulingGateway implements OnGatewayConnection, OnGatewayDisconne
       return;
     }
     client.data.user = { id: data.user.id, email: data.user.email ?? '' } as SocketUser;
+    client.data.token = token;
+    // Phòng riêng theo user (KHÁC phòng theo nhóm) — nơi nhận thông báo "danh sách nhóm
+    // vừa đổi" (tạo/tham gia/mời/xóa thành viên/giải tán), kể cả với nhóm mà client CHƯA
+    // 'join-group' (vd vừa được thêm vào 1 nhóm mới, chưa kịp tải lại danh sách).
+    client.join(`user:${data.user.id}`);
   }
 
   handleDisconnect(client: Socket): void {
@@ -83,6 +92,77 @@ export class SchedulingGateway implements OnGatewayConnection, OnGatewayDisconne
   /** Controller gọi hàm này SAU mỗi thay đổi sự kiện nhóm để phát cho phòng. */
   emitToGroup(groupId: string, type: 'created' | 'updated' | 'deleted', payload: unknown): void {
     this.server?.to(groupId).emit(`group-event:${type}`, { groupId, payload });
+  }
+
+  /** Controller gọi hàm này SAU khi gửi tin nhắn qua REST để phát cho phòng (không lặp lại INSERT). */
+  emitMessage(groupId: string, message: unknown): void {
+    this.server?.to(groupId).emit('group-message:new', message);
+  }
+
+  /** Phát tin nhắn vừa được CHỈNH SỬA cho phòng. */
+  emitMessageUpdate(groupId: string, message: unknown): void {
+    this.server?.to(groupId).emit('group-message:updated', message);
+  }
+
+  /** Phát tin nhắn vừa bị THU HỒI cho phòng (chỉ cần id để client ẩn/đánh dấu). */
+  emitMessageDelete(groupId: string, message: unknown): void {
+    this.server?.to(groupId).emit('group-message:deleted', message);
+  }
+
+  /**
+   * Controller gọi hàm này SAU khi tạo/tham gia/mời/xóa thành viên/giải tán nhóm, để mọi
+   * thành viên (kể cả đang mở nhiều tab, hoặc chưa 'join-group' phòng nhóm này) tự tải lại
+   * danh sách nhóm NGAY — không cần bấm F5. Cố ý không gửi kèm payload: để client tự gọi lại
+   * API (nguồn sự thật duy nhất), tránh phải đồng bộ hình dạng dữ liệu qua nhiều đường.
+   */
+  notifyGroupsChanged(userIds: string[]): void {
+    for (const userId of userIds) this.server?.to(`user:${userId}`).emit('groups:changed');
+  }
+
+  /**
+   * Chat real-time: client gửi tin nhắn thẳng qua socket (không cần round-trip REST).
+   * Yêu cầu client đã 'join-group' phòng này trước đó (đảm bảo họ nhận lại được tin nhắn
+   * của chính mình qua broadcast). Việc kiểm tra "có phải thành viên nhóm" do RLS của
+   * bảng group_messages đảm nhiệm khi insert bằng client gắn JWT của chính user.
+   */
+  @SubscribeMessage('send-message')
+  async onSendMessage(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() body: { groupId: string; content: string },
+  ): Promise<void> {
+    const user = client.data.user as SocketUser | undefined;
+    const token = client.data.token as string | undefined;
+    const groupId = body?.groupId;
+    const content = (body?.content ?? '').trim();
+    if (!user || !token || !groupId || !content) return;
+
+    const rooms = (client.data.groupRooms as Set<string>) ?? new Set<string>();
+    if (!rooms.has(groupId)) {
+      client.emit('group-message:error', { groupId, message: 'Bạn cần vào phòng nhóm (join-group) trước khi chat.' });
+      return;
+    }
+
+    try {
+      const userClient = this.supabaseService.getClientForUser(token);
+      const message = await this.groupsService.sendMessage(userClient, groupId, user.id, user.email, content);
+      this.server?.to(groupId).emit('group-message:new', message);
+    } catch {
+      client.emit('group-message:error', { groupId, message: 'Không gửi được tin nhắn.' });
+    }
+  }
+
+  /**
+   * "Đang gõ…" — sự kiện tạm thời, KHÔNG lưu DB. Phát cho những người khác trong phòng
+   * (không gửi lại cho chính người đang gõ). Client tự ẩn sau vài giây nếu không có tin mới.
+   */
+  @SubscribeMessage('typing')
+  onTyping(@ConnectedSocket() client: Socket, @MessageBody() body: { groupId: string }): void {
+    const user = client.data.user as SocketUser | undefined;
+    const groupId = body?.groupId;
+    if (!user || !groupId) return;
+    const rooms = (client.data.groupRooms as Set<string>) ?? new Set<string>();
+    if (!rooms.has(groupId)) return;
+    client.to(groupId).emit('group-message:typing', { groupId, email: user.email });
   }
 
   /** Phát danh sách email đang online trong 1 nhóm. */
