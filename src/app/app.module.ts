@@ -13,6 +13,7 @@ import { SettingsModule } from '../settings/settings.module';
 import { BookingModule } from '../booking/booking.module';
 import { SharingModule } from '../sharing/sharing.module';
 import { AttachmentsModule } from '../attachments/attachments.module';
+import { NotesModule } from '../notes/notes.module';
 
 @Module({
   imports: [
@@ -27,7 +28,8 @@ import { AttachmentsModule } from '../attachments/attachments.module';
     SettingsModule,
     BookingModule,
     SharingModule,
-    AttachmentsModule,],
+    AttachmentsModule,
+    NotesModule,],
   controllers: [AppController],
   providers: [AppService],
 })
