@@ -14,6 +14,7 @@ import { BookingModule } from '../booking/booking.module';
 import { SharingModule } from '../sharing/sharing.module';
 import { AttachmentsModule } from '../attachments/attachments.module';
 import { NotesModule } from '../notes/notes.module';
+import { GroupsModule } from '../groups/groups.module';
 
 @Module({
   imports: [
@@ -29,7 +30,8 @@ import { NotesModule } from '../notes/notes.module';
     BookingModule,
     SharingModule,
     AttachmentsModule,
-    NotesModule,],
+    NotesModule,
+    GroupsModule,],
   controllers: [AppController],
   providers: [AppService],
 })
