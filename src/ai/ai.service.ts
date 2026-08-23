@@ -35,9 +35,9 @@ export interface AiParseResult {
 @Injectable()
 export class AiService {
   private readonly logger = new Logger(AiService.name);
-  /** Model Gemini — chỉnh được qua .env GEMINI_MODEL; mặc định bản flash chuẩn, nhanh. */
+  /** Model Gemini — chỉnh được qua .env GEMINI_MODEL. Mặc định giữ model đang chạy tốt trên key hiện tại. */
   private get MODEL(): string {
-    return this.config.get<string>('GEMINI_MODEL') ?? 'gemini-2.5-flash';
+    return this.config.get<string>('GEMINI_MODEL') ?? 'gemini-3.6-flash';
   }
 
   // Rate-limit đơn giản trong bộ nhớ: tối đa 20 request / user / giờ
