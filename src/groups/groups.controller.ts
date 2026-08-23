@@ -1,24 +1,25 @@
-// GroupsController: REST /api/groups — mọi route yêu cầu đăng nhập (SupabaseAuthGuard).
-// Sau mỗi thay đổi SỰ KIỆN nhóm, phát real-time cho các thành viên online qua SchedulingGateway.
+// GroupsController — Cửa nhận yêu cầu về nhóm từ giao diện (đường dẫn /api/groups).
+// Mọi yêu cầu đều phải đăng nhập; sau khi lưu thay đổi thì báo real-time cho thành viên.
 
 import { Body, Controller, Delete, Get, Param, Patch, Post, Query, Req, UseGuards } from '@nestjs/common';
 import type { User } from '@supabase/supabase-js';
 import { CurrentUser } from '../auth/current-user.decorator';
 import { SupabaseAuthGuard } from '../auth/supabase-auth.guard';
 import { GroupsService } from './groups.service';
-import { SchedulingGateway } from './scheduling.gateway';
+import { GroupRealtimeGateway } from './scheduling.gateway';
 import { CreateGroupDto } from './dto/create-group.dto';
 import { InviteMemberDto } from './dto/invite-member.dto';
 import { JoinGroupDto } from './dto/join-group.dto';
 import { CreateGroupEventDto, UpdateGroupEventDto } from './dto/group-event.dto';
 import { SendMessageDto } from './dto/send-message.dto';
+import { SetMeetDto } from './dto/set-meet.dto';
 
 @UseGuards(SupabaseAuthGuard)
 @Controller('groups')
 export class GroupsController {
   constructor(
     private readonly groups: GroupsService,
-    private readonly gateway: SchedulingGateway,
+    private readonly gateway: GroupRealtimeGateway,
   ) {}
 
   // ---------- Nhóm ----------
@@ -117,6 +118,27 @@ export class GroupsController {
     const res = await this.groups.deleteEvent(req.supabase, id, eventId);
     this.gateway.emitToGroup(id, 'deleted', { id: eventId });
     return res;
+  }
+
+  /** Gắn link Google Meet vào sự kiện nhóm rồi phát cập nhật real-time cho cả nhóm. */
+  @Post(':id/events/:eventId/meet')
+  async setMeet(
+    @Req() req: any,
+    @Param('id') id: string,
+    @Param('eventId') eventId: string,
+    @Body() dto: SetMeetDto,
+  ) {
+    const event = await this.groups.setMeetLink(req.supabase, id, eventId, dto.meetLink);
+    this.gateway.emitToGroup(id, 'updated', event);
+    return event;
+  }
+
+  /** Gỡ link Google Meet khỏi sự kiện nhóm rồi phát cập nhật real-time. */
+  @Delete(':id/events/:eventId/meet')
+  async removeMeet(@Req() req: any, @Param('id') id: string, @Param('eventId') eventId: string) {
+    const event = await this.groups.removeMeetLink(req.supabase, id, eventId);
+    this.gateway.emitToGroup(id, 'updated', event);
+    return event;
   }
 
   // ---------- Chat nhóm ----------

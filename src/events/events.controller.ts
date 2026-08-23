@@ -8,6 +8,7 @@ import { SupabaseAuthGuard } from '../auth/supabase-auth.guard';
 import { CreateEventDto } from './dto/create-event.dto';
 import { UpdateEventDto } from './dto/update-event.dto';
 import { RsvpDto } from './dto/rsvp.dto';
+import { SetMeetDto } from './dto/set-meet.dto';
 import { EventsService } from './events.service';
 
 @UseGuards(SupabaseAuthGuard)
@@ -57,5 +58,17 @@ export class EventsController {
   @Post(':id/rsvp')
   rsvp(@Req() req: any, @CurrentUser() user: User, @Param('id') id: string, @Body() dto: RsvpDto) {
     return this.eventsService.rsvp(req.supabase, id, user.email ?? '', dto.status);
+  }
+
+  /** Gắn link Google Meet vào 1 sự kiện (cá nhân). */
+  @Post(':id/meet')
+  setMeet(@Req() req: any, @Param('id') id: string, @Body() dto: SetMeetDto) {
+    return this.eventsService.setMeetLink(req.supabase, id, dto.meetLink);
+  }
+
+  /** Gỡ link Google Meet khỏi 1 sự kiện (cá nhân). */
+  @Delete(':id/meet')
+  removeMeet(@Req() req: any, @Param('id') id: string) {
+    return this.eventsService.removeMeetLink(req.supabase, id);
   }
 }

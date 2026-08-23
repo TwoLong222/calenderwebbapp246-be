@@ -1,13 +1,7 @@
-// GroupsService: logic cho tính năng "Nhóm lên lịch cùng nhau".
-//
-// Quy ước client Supabase:
-//   - `supabase` (truyền từ controller) = client GẮN JWT của user -> tuân RLS.
-//     Dùng cho các thao tác thay mặt user (đọc nhóm, tạo lịch/nhóm, CRUD sự kiện nhóm).
-//   - `adminClient` (service_role, BYPASS RLS) = dùng cho việc ghi bảng group_members
-//     có kiểm soát (mời/tham gia bằng mã/đồng bộ lời mời), nơi RLS người-dùng không tiện.
-//
-// Bảo mật: mọi RLS trong migrations/2026-08-phase7-groups.sql vẫn được áp cho `supabase`.
-// Với các thao tác dùng adminClient, service TỰ kiểm tra quyền (owner? / đúng mã?) trước khi ghi.
+// GroupsService — Xử lý nghiệp vụ nhóm ở máy chủ.
+// Tạo/tham gia/mời nhóm, quản lý sự kiện nhóm và tin nhắn (đọc/ghi cơ sở dữ liệu).
+// Lưu ý bảo mật: chủ yếu dùng quyền của chính người dùng để tuân luật bảo mật (RLS);
+// chỉ vài thao tác đặc biệt mới dùng quyền admin, và có tự kiểm tra quyền trước khi ghi.
 
 import { ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import type { SupabaseClient } from '@supabase/supabase-js';
@@ -236,6 +230,34 @@ export class GroupsService {
     const { error } = await supabase.from('events').delete().eq('id', eventId).eq('group_id', groupId);
     if (error) throw error;
     return { id: eventId };
+  }
+
+  /** Gắn (hoặc cập nhật) link Google Meet cho một sự kiện nhóm. */
+  async setMeetLink(supabase: SupabaseClient, groupId: string, eventId: string, meetLink: string) {
+    const { data, error } = await supabase
+      .from('events')
+      .update({ meet_link: meetLink })
+      .eq('id', eventId)
+      .eq('group_id', groupId)
+      .select('*, attendees:event_attendees(*)')
+      .maybeSingle();
+    if (error) throw error;
+    if (!data) throw new ForbiddenException('Không cập nhật được link Meet cho sự kiện nhóm này.');
+    return data;
+  }
+
+  /** Gỡ link Google Meet khỏi 1 sự kiện nhóm (đặt về null). */
+  async removeMeetLink(supabase: SupabaseClient, groupId: string, eventId: string) {
+    const { data, error } = await supabase
+      .from('events')
+      .update({ meet_link: null })
+      .eq('id', eventId)
+      .eq('group_id', groupId)
+      .select('*, attendees:event_attendees(*)')
+      .maybeSingle();
+    if (error) throw error;
+    if (!data) throw new ForbiddenException('Không gỡ được link Meet cho sự kiện nhóm này.');
+    return data;
   }
 
   // ============================ CHAT NHÓM ============================

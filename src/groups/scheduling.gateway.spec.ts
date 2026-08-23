@@ -1,10 +1,10 @@
-// Test cho SchedulingGateway — tập trung vào chat real-time (send-message) và emitMessage.
+// Test cho GroupRealtimeGateway — tập trung vào chat real-time (send-message) và emitMessage.
 // Server/Socket của socket.io được giả lập tối thiểu (chỉ các hàm gateway thực sự gọi tới).
 
-import { SchedulingGateway } from './scheduling.gateway';
+import { GroupRealtimeGateway } from './scheduling.gateway';
 
-describe('SchedulingGateway', () => {
-  let gateway: SchedulingGateway;
+describe('GroupRealtimeGateway', () => {
+  let gateway: GroupRealtimeGateway;
   let supabaseServiceStub: any;
   let groupsServiceStub: any;
   let serverStub: any;
@@ -20,7 +20,7 @@ describe('SchedulingGateway', () => {
     };
     groupsServiceStub = { sendMessage: jest.fn() };
 
-    gateway = new SchedulingGateway(supabaseServiceStub, groupsServiceStub);
+    gateway = new GroupRealtimeGateway(supabaseServiceStub, groupsServiceStub);
     gateway.server = serverStub;
   });
 

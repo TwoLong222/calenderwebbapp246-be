@@ -2,13 +2,12 @@ import { Module } from '@nestjs/common';
 import { AuthModule } from '../auth/auth.module';
 import { GroupsController } from './groups.controller';
 import { GroupsService } from './groups.service';
-import { SchedulingGateway } from './scheduling.gateway';
+import { GroupRealtimeGateway } from './scheduling.gateway';
 
-// GroupsModule: nhóm lên lịch cùng nhau.
-// Import AuthModule để dùng SupabaseAuthGuard + SupabaseService (adminClient cho gateway).
+// GroupsModule — Gom mọi thành phần của tính năng nhóm (nhận yêu cầu, xử lý, real-time) thành một khối.
 @Module({
   imports: [AuthModule],
   controllers: [GroupsController],
-  providers: [GroupsService, SchedulingGateway],
+  providers: [GroupsService, GroupRealtimeGateway],
 })
 export class GroupsModule {}

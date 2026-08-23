@@ -339,6 +339,32 @@ export class EventsService {
     return data ?? [];
   }
 
+  /** Gắn link Google Meet vào 1 sự kiện (RLS đảm bảo chỉ chủ sự kiện cập nhật được). */
+  async setMeetLink(supabase: SupabaseClient, id: string, meetLink: string) {
+    const { data, error } = await supabase
+      .from('events')
+      .update({ meet_link: meetLink })
+      .eq('id', id)
+      .select('*, attendees:event_attendees(*)')
+      .maybeSingle();
+    if (error) throw error;
+    if (!data) throw new ForbiddenException('Không cập nhật được link Meet cho sự kiện này.');
+    return data;
+  }
+
+  /** Gỡ link Google Meet khỏi 1 sự kiện (đặt về null). */
+  async removeMeetLink(supabase: SupabaseClient, id: string) {
+    const { data, error } = await supabase
+      .from('events')
+      .update({ meet_link: null })
+      .eq('id', id)
+      .select('*, attendees:event_attendees(*)')
+      .maybeSingle();
+    if (error) throw error;
+    if (!data) throw new ForbiddenException('Không gỡ được link Meet cho sự kiện này.');
+    return data;
+  }
+
   /**
    * Đồng bộ danh sách khách mời KIỂU GIA TĂNG: chỉ xóa khách bị bỏ ra, chỉ thêm khách mới
    * (giữ nguyên trạng thái RSVP của khách cũ). Mỗi khách mới sinh 1 respond_token để dùng

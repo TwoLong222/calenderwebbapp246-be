@@ -1,11 +1,6 @@
-// SchedulingGateway: máy chủ WebSocket (socket.io) cho tính năng nhóm.
-//
-// - Xác thực: client gửi kèm access token của Supabase trong handshake.auth.token.
-//   Gateway xác thực bằng adminClient.auth.getUser(token); sai -> ngắt kết nối.
-// - Phòng (room) = groupId. Client emit 'join-group' để vào phòng của nhóm mình.
-// - Khi có thay đổi sự kiện nhóm (controller gọi emitToGroup), phát cho mọi thành viên
-//   đang online trong phòng -> lịch của họ cập nhật TỨC THÌ, không cần reload.
-// - Presence: theo dõi ai đang online trong mỗi nhóm, phát danh sách khi có người vào/ra.
+// GroupRealtimeGateway — Máy chủ WebSocket của nhóm ("đường dây" thời gian thực).
+// Mỗi nhóm là một "phòng"; khi có sự kiện/tin nhắn mới, báo ngay cho mọi người trong phòng
+// (không cần tải lại trang), đồng thời theo dõi ai đang online và ai đang gõ.
 
 import {
   ConnectedSocket,
@@ -26,7 +21,7 @@ interface SocketUser {
 }
 
 @WebSocketGateway({ cors: { origin: true, credentials: true } })
-export class SchedulingGateway implements OnGatewayConnection, OnGatewayDisconnect {
+export class GroupRealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect {
   @WebSocketServer() server!: Server;
 
   constructor(

@@ -1,8 +1,8 @@
-// DTO cho sự kiện NHÓM — giống create-event nhưng bỏ các phần chưa cần cho nhóm
-// (khách mời/nhắc/lặp lại). Có thể mở rộng sau.
+// Dữ liệu để tạo/sửa một sự kiện của nhóm (tiêu đề, thời gian, màu…).
 
 import { IsBoolean, IsIn, IsISO8601, IsOptional, IsString, MaxLength } from 'class-validator';
 
+// CreateGroupEventDto — Dùng khi TẠO sự kiện nhóm mới.
 export class CreateGroupEventDto {
   @IsString()
   @MaxLength(200)
@@ -36,6 +36,7 @@ export class CreateGroupEventDto {
   color?: string;
 }
 
+// UpdateGroupEventDto — Dùng khi SỬA sự kiện nhóm (các trường đều tùy chọn).
 export class UpdateGroupEventDto {
   @IsOptional()
   @IsString()
