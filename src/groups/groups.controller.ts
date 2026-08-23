@@ -104,11 +104,13 @@ export class GroupsController {
   @Patch(':id/events/:eventId')
   async updateEvent(
     @Req() req: any,
+    @CurrentUser() user: User,
     @Param('id') id: string,
     @Param('eventId') eventId: string,
     @Body() dto: UpdateGroupEventDto,
   ) {
-    const res = await this.groups.updateEvent(req.supabase, id, eventId, dto);
+    // Truyền user.id để kiểm tra quyền: chỉ người tạo mới được đổi giờ bắt đầu/kết thúc.
+    const res = await this.groups.updateEvent(req.supabase, id, eventId, dto, user.id);
     this.gateway.emitToGroup(id, 'updated', res.event);
     return res;
   }

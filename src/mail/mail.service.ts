@@ -41,6 +41,15 @@ export class MailService {
       host: this.config.get<string>('SMTP_HOST'),
       port: Number(this.config.get<string>('SMTP_PORT') ?? 587),
       secure: this.config.get<string>('SMTP_SECURE') === 'true',
+      // Giữ sẵn kết nối và tái dùng cho các email sau -> nhanh hơn nhiều (không phải
+      // bắt tay TLS lại từ đầu mỗi lần gửi, vốn rất chậm với SMTP Gmail).
+      pool: true,
+      maxConnections: 3,
+      maxMessages: 100,
+      // Không chờ vô hạn nếu mạng chậm/kẹt.
+      connectionTimeout: 20000,
+      greetingTimeout: 20000,
+      socketTimeout: 30000,
       auth: {
         user: this.config.get<string>('SMTP_USER'),
         pass: this.config.get<string>('SMTP_PASS'),

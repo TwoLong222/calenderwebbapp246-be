@@ -198,7 +198,31 @@ export class GroupsService {
     return { event, conflicts };
   }
 
-  async updateEvent(supabase: SupabaseClient, groupId: string, eventId: string, dto: UpdateGroupEventDto) {
+  async updateEvent(
+    supabase: SupabaseClient,
+    groupId: string,
+    eventId: string,
+    dto: UpdateGroupEventDto,
+    userId?: string,
+  ) {
+    // QUYỀN: chỉ NGƯỜI TẠO sự kiện nhóm mới được ĐỔI GIỜ bắt đầu/kết thúc; thành viên
+    // khác vẫn sửa được các trường khác nhưng không dời được giờ họp. So sánh giá trị THỰC
+    // SỰ thay đổi vì form luôn gửi kèm start/end mỗi lần lưu.
+    if ((dto.startTime !== undefined || dto.endTime !== undefined) && userId) {
+      const { data: cur } = await supabase
+        .from('events')
+        .select('creator_id, start_time, end_time')
+        .eq('id', eventId)
+        .eq('group_id', groupId)
+        .maybeSingle();
+      const timeChanged =
+        (dto.startTime !== undefined && new Date(dto.startTime).getTime() !== new Date(cur?.start_time).getTime()) ||
+        (dto.endTime !== undefined && new Date(dto.endTime).getTime() !== new Date(cur?.end_time).getTime());
+      if (timeChanged && cur?.creator_id && cur.creator_id !== userId) {
+        throw new ForbiddenException('Chỉ người tạo mới được đổi giờ bắt đầu/kết thúc của sự kiện này.');
+      }
+    }
+
     const patch: Record<string, unknown> = {};
     if (dto.title !== undefined) patch['title'] = dto.title;
     if (dto.description !== undefined) patch['description'] = dto.description;

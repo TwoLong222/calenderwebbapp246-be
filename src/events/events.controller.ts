@@ -17,8 +17,9 @@ export class EventsController {
   constructor(private readonly eventsService: EventsService) {}
 
   @Get()
-  list(@Req() req: any) {
-    return this.eventsService.listEvents(req.supabase);
+  list(@Req() req: any, @CurrentUser() user: User) {
+    // Truyền email để lấy thêm các sự kiện user ĐƯỢC MỜI (nằm trên lịch người khác).
+    return this.eventsService.listEvents(req.supabase, user.email ?? '');
   }
 
   /** Danh sách sự kiện trong thùng rác của user */
@@ -45,8 +46,9 @@ export class EventsController {
   }
 
   @Patch(':id')
-  update(@Req() req: any, @Param('id') id: string, @Body() dto: UpdateEventDto) {
-    return this.eventsService.updateEvent(req.supabase, id, dto);
+  update(@Req() req: any, @CurrentUser() user: User, @Param('id') id: string, @Body() dto: UpdateEventDto) {
+    // Truyền user.id để kiểm tra quyền: chỉ người tạo mới được đổi giờ bắt đầu/kết thúc.
+    return this.eventsService.updateEvent(req.supabase, id, dto, user.id);
   }
 
   @Delete(':id')
