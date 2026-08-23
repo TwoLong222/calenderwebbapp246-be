@@ -36,9 +36,13 @@ export class AttachmentReminderService {
 
     if (error) {
       // Cột chưa tồn tại (migration phase8 chưa chạy) -> im lặng bỏ qua.
-      if (!/available_from|notified_at|column/i.test(error.message)) {
-        this.logger.error('Không quét được tài liệu tới giờ mở', error);
+      if (/available_from|notified_at|column/i.test(error.message)) return;
+      // Lệch giờ máy <-> Supabase (PGRST303 "JWT issued at future") -> tạm thời, chỉ cảnh báo.
+      if ((error as any).code === 'PGRST303' || /issued at future|jwt/i.test(error.message)) {
+        this.logger.warn(`Bỏ qua lượt quét: lệch giờ máy/Supabase (${error.message}). Kiểm tra đồng hồ hệ thống.`);
+        return;
       }
+      this.logger.error('Không quét được tài liệu tới giờ mở', error);
       return;
     }
 
