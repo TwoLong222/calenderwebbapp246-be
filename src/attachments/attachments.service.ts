@@ -52,7 +52,10 @@ export class AttachmentsService {
       throw new BadRequestException('Thời gian "đến" phải sau "mở từ".');
     }
 
-    const safeName = file.originalname.replace(/[^\w.\-]+/g, '_').slice(0, 120);
+    // Multer đọc tên file trong header dạng latin1 -> tên tiếng Việt bị lỗi font.
+    // Giải mã lại về UTF-8 để giữ đúng dấu (vd "Phiếu thông tin sinh viên").
+    const displayName = Buffer.from(file.originalname, 'latin1').toString('utf8');
+    const safeName = displayName.replace(/[^\w.\-]+/g, '_').slice(0, 120);
     const path = `${eventId}/${randomUUID()}-${safeName}`;
 
     const up = await this.admin.storage
@@ -65,7 +68,7 @@ export class AttachmentsService {
     const row: Record<string, unknown> = {
       event_id: eventId,
       file_path: path,
-      file_name: file.originalname,
+      file_name: displayName,
       mime_type: file.mimetype,
       size_bytes: file.size,
       uploaded_by: userId,
