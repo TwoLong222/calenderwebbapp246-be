@@ -149,6 +149,10 @@ Quy tắc QUAN TRỌNG:
 - Thời LƯỢNG thì được mặc định 1 tiếng nếu người dùng không nói.
 - reschedule: nếu không có giờ mới -> "unclear" hỏi "Dời sang lúc nào?".
 - Chỉ điền field liên quan tới intent. Không rõ ý -> "unclear" + hỏi lại.
+- CHÀO HỎI / NÓI CHUYỆN PHIẾM (vd "hi", "ok", "cảm ơn", "im", "ko cần"): intent="unclear",
+  trả lời NGẮN GỌN, THÂN THIỆN, TỰ NHIÊN (đừng lặp y hệt mỗi lần) và LỒNG 1 ví dụ lệnh cụ thể
+  để gợi ý, vd: "Mình giúp bạn quản lý lịch nè — thử: 'mai 3h họp nhóm 1 tiếng' xem 😄".
+  Nếu người dùng tỏ ý dừng ("thôi", "ko cần", "im") thì đáp lịch sự, ngắn, KHÔNG hỏi lại dồn dập.
 - NGÔN NGỮ TRẢ LỜI: trường "reply" PHẢI viết bằng ${lang === 'en' ? 'TIẾNG ANH (English)' : 'TIẾNG VIỆT'}, dù người dùng gõ bằng ngôn ngữ nào. Các field khác giữ nguyên.`;
 
     try {
