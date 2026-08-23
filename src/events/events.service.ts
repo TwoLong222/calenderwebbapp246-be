@@ -60,7 +60,7 @@ export class EventsService {
     return data.id;
   }
 
-  async listEvents(supabase: SupabaseClient) {
+  async listEvents(supabase: SupabaseClient, userEmail?: string) {
     const { data, error } = await supabase
       .from('events')
       .select('*, attendees:event_attendees(*)')
@@ -68,7 +68,39 @@ export class EventsService {
       .order('start_time', { ascending: true });
 
     if (error) throw error;
-    return data;
+    // Lịch CÁ NHÂN không hiển thị sự kiện NHÓM (group_id != null) — nhóm có endpoint riêng.
+    // Lọc ở JS để không phụ thuộc cột group_id đã tồn tại (an toàn nếu chưa chạy migration Phase 7).
+    const own = (data ?? []).filter((e: any) => !e.group_id);
+
+    // Sự kiện mình ĐƯỢC MỜI: nó nằm trên lịch của NGƯỜI TẠO nên RLS mặc định chặn user
+    // đọc -> lịch người được mời bị trống dù đã Đồng ý. Lấy thêm các sự kiện này qua
+    // service_role (bypass RLS) rồi gộp vào. Cách này KHÔNG cần chạy migration RLS.
+    const invited = await this.listInvitedEvents(userEmail);
+
+    // Gộp + khử trùng theo id (sự kiện mình vừa tạo cũng có mình trong danh sách mời).
+    const byId = new Map<string, any>();
+    for (const e of [...own, ...invited]) byId.set(e.id, e);
+    return [...byId.values()].sort((a, b) =>
+      (a.start_time ?? '') < (b.start_time ?? '') ? -1 : 1,
+    );
+  }
+
+  /** Các sự kiện mà email của user nằm trong danh sách khách mời (đọc bằng service_role). */
+  private async listInvitedEvents(userEmail?: string): Promise<any[]> {
+    if (!userEmail) return [];
+    const admin = this.supabaseService.adminClient;
+    const { data, error } = await admin
+      .from('event_attendees')
+      .select('event:events(*, attendees:event_attendees(*))')
+      .ilike('email', userEmail); // khớp không phân biệt hoa/thường
+
+    if (error) {
+      this.logger.warn(`Không lấy được sự kiện được mời cho ${userEmail}: ${error.message}`);
+      return [];
+    }
+    return (data ?? [])
+      .map((row: any) => row.event)
+      .filter((e: any) => e && !e.group_id && !e.deleted_at);
   }
 
   /**
@@ -223,13 +255,23 @@ export class EventsService {
     return { event: { ...first, attendees }, conflicts };
   }
 
-  async updateEvent(supabase: SupabaseClient, id: string, dto: UpdateEventDto) {
+  async updateEvent(supabase: SupabaseClient, id: string, dto: UpdateEventDto, userId?: string) {
     const { data: existing, error: fetchError } = await supabase
       .from('events')
-      .select('calendar_id, start_time, end_time, is_all_day')
+      .select('calendar_id, start_time, end_time, is_all_day, creator_id')
       .eq('id', id)
       .single();
     if (fetchError) throw fetchError;
+
+    // QUYỀN: chỉ NGƯỜI TẠO mới được ĐỔI GIỜ bắt đầu/kết thúc. So sánh giá trị THỰC SỰ
+    // thay đổi (không chỉ "có gửi lên"), vì form luôn gửi kèm start/end mỗi lần lưu ->
+    // người khác vẫn sửa được tiêu đề/địa điểm... miễn là không dời giờ.
+    const timeChanged =
+      (dto.startTime !== undefined && new Date(dto.startTime).getTime() !== new Date(existing.start_time).getTime()) ||
+      (dto.endTime !== undefined && new Date(dto.endTime).getTime() !== new Date(existing.end_time).getTime());
+    if (timeChanged && existing.creator_id && userId && existing.creator_id !== userId) {
+      throw new ForbiddenException('Chỉ người tạo mới được đổi giờ bắt đầu/kết thúc của sự kiện này.');
+    }
 
     const nextStart = dto.startTime ?? existing.start_time;
     const nextEnd = dto.endTime ?? existing.end_time;
@@ -397,6 +439,32 @@ export class EventsService {
     return data ?? [];
   }
 
+  /** Gắn link Google Meet vào 1 sự kiện (RLS đảm bảo chỉ chủ sự kiện cập nhật được). */
+  async setMeetLink(supabase: SupabaseClient, id: string, meetLink: string) {
+    const { data, error } = await supabase
+      .from('events')
+      .update({ meet_link: meetLink })
+      .eq('id', id)
+      .select('*, attendees:event_attendees(*)')
+      .maybeSingle();
+    if (error) throw error;
+    if (!data) throw new ForbiddenException('Không cập nhật được link Meet cho sự kiện này.');
+    return data;
+  }
+
+  /** Gỡ link Google Meet khỏi 1 sự kiện (đặt về null). */
+  async removeMeetLink(supabase: SupabaseClient, id: string) {
+    const { data, error } = await supabase
+      .from('events')
+      .update({ meet_link: null })
+      .eq('id', id)
+      .select('*, attendees:event_attendees(*)')
+      .maybeSingle();
+    if (error) throw error;
+    if (!data) throw new ForbiddenException('Không gỡ được link Meet cho sự kiện này.');
+    return data;
+  }
+
   /**
    * Đảm bảo NGƯỜI TẠO có mặt trong danh sách khách mời (status 'accepted') để tự nhận email
    * nhắc lịch — kể cả khi sự kiện không mời ai khác. KHÔNG gửi email mời cho chính mình.
@@ -519,6 +587,35 @@ export class EventsService {
 
     const label = action === 'accept' ? 'ĐỒNG Ý tham gia ✅' : 'TỪ CHỐI ❌';
     return this.responsePage('Đã ghi nhận phản hồi', `Bạn đã <strong>${label}</strong>. Cảm ơn bạn!`);
+  }
+
+  /**
+   * Trang XÁC NHẬN hiển thị khi khách bấm link trong email (GET). KHÔNG thay đổi dữ liệu —
+   * chỉ hiện 1 nút; bấm nút mới POST để thực sự ghi nhận (chống trình quét email tự bấm).
+   */
+  respondConfirmPage(eventId: string, token: string, action: string): string {
+    if (action !== 'accept' && action !== 'decline') {
+      return this.responsePage('Liên kết không hợp lệ', 'Hành động không hợp lệ.');
+    }
+    if (!token) {
+      return this.responsePage('Liên kết không hợp lệ', 'Thiếu mã xác nhận.');
+    }
+    const base = this.config.get<string>('PUBLIC_API_URL') ?? 'http://localhost:3000/api';
+    const isAccept = action === 'accept';
+    const label = isAccept ? 'ĐỒNG Ý tham gia' : 'TỪ CHỐI';
+    const color = isAccept ? '#16a34a' : '#dc2626';
+    return `<!doctype html><html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Xác nhận phản hồi</title></head>
+<body style="font-family:system-ui,Arial,sans-serif;background:#f8fafc;display:flex;min-height:100vh;align-items:center;justify-content:center;margin:0">
+  <div style="background:#fff;padding:32px 40px;border-radius:12px;box-shadow:0 4px 24px rgba(0,0,0,.08);text-align:center;max-width:420px">
+    <h1 style="font-size:20px;margin:0 0 14px;color:#0f172a">Xác nhận phản hồi lời mời</h1>
+    <p style="color:#475569;margin:0 0 20px;line-height:1.5">Bấm nút bên dưới để <strong>${label}</strong> sự kiện này.</p>
+    <form method="POST" action="${base}/events/${eventId}/respond-via-email">
+      <input type="hidden" name="token" value="${token}">
+      <input type="hidden" name="action" value="${action}">
+      <button type="submit" style="background:${color};color:#fff;border:0;padding:12px 24px;border-radius:8px;font-size:15px;cursor:pointer">Xác nhận ${label}</button>
+    </form>
+  </div>
+</body></html>`;
   }
 
   /** Trang HTML đơn giản trả về sau khi bấm nút trong email */

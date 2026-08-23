@@ -8,6 +8,7 @@ import { SupabaseAuthGuard } from '../auth/supabase-auth.guard';
 import { CreateEventDto } from './dto/create-event.dto';
 import { UpdateEventDto } from './dto/update-event.dto';
 import { RsvpDto } from './dto/rsvp.dto';
+import { SetMeetDto } from './dto/set-meet.dto';
 import { EventsService } from './events.service';
 
 @UseGuards(SupabaseAuthGuard)
@@ -16,8 +17,9 @@ export class EventsController {
   constructor(private readonly eventsService: EventsService) {}
 
   @Get()
-  list(@Req() req: any) {
-    return this.eventsService.listEvents(req.supabase);
+  list(@Req() req: any, @CurrentUser() user: User) {
+    // Truyền email để lấy thêm các sự kiện user ĐƯỢC MỜI (nằm trên lịch người khác).
+    return this.eventsService.listEvents(req.supabase, user.email ?? '');
   }
 
   /** Danh sách sự kiện trong thùng rác của user */
@@ -50,8 +52,9 @@ export class EventsController {
   }
 
   @Patch(':id')
-  update(@Req() req: any, @Param('id') id: string, @Body() dto: UpdateEventDto) {
-    return this.eventsService.updateEvent(req.supabase, id, dto);
+  update(@Req() req: any, @CurrentUser() user: User, @Param('id') id: string, @Body() dto: UpdateEventDto) {
+    // Truyền user.id để kiểm tra quyền: chỉ người tạo mới được đổi giờ bắt đầu/kết thúc.
+    return this.eventsService.updateEvent(req.supabase, id, dto, user.id);
   }
 
   @Delete(':id')
@@ -63,5 +66,17 @@ export class EventsController {
   @Post(':id/rsvp')
   rsvp(@Req() req: any, @CurrentUser() user: User, @Param('id') id: string, @Body() dto: RsvpDto) {
     return this.eventsService.rsvp(req.supabase, id, user.email ?? '', dto.status);
+  }
+
+  /** Gắn link Google Meet vào 1 sự kiện (cá nhân). */
+  @Post(':id/meet')
+  setMeet(@Req() req: any, @Param('id') id: string, @Body() dto: SetMeetDto) {
+    return this.eventsService.setMeetLink(req.supabase, id, dto.meetLink);
+  }
+
+  /** Gỡ link Google Meet khỏi 1 sự kiện (cá nhân). */
+  @Delete(':id/meet')
+  removeMeet(@Req() req: any, @Param('id') id: string) {
+    return this.eventsService.removeMeetLink(req.supabase, id);
   }
 }
