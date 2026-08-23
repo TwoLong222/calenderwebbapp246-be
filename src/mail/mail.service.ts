@@ -75,6 +75,34 @@ export class MailService {
     this.logger.log(`Đã gửi email nhắc lịch tới ${params.to} — sự kiện "${title}"`);
   }
 
+  /** Báo cho khách rằng tài liệu đính kèm của sự kiện đã tới giờ xem được. */
+  async sendAttachmentAvailable(params: {
+    to: string;
+    eventTitle: string;
+    fileName: string;
+    /** ISO string, hạn xem tới lúc nào (nếu có). */
+    availableUntil?: string | null;
+  }): Promise<void> {
+    const title = params.eventTitle?.trim() || '(không tiêu đề)';
+    let untilLine = '';
+    if (params.availableUntil) {
+      const until = new Date(params.availableUntil).toLocaleString('vi-VN', {
+        weekday: 'long', day: 'numeric', month: 'numeric', hour: '2-digit', minute: '2-digit',
+      });
+      untilLine = ` (xem được đến <strong>${until}</strong>)`;
+    }
+    await this.transporter.sendMail({
+      from: this.fromAddress,
+      to: params.to,
+      subject: `Tài liệu đã mở: ${title}`,
+      text: `Tài liệu "${params.fileName}" của sự kiện "${title}" đã có thể xem/tải.${
+        params.availableUntil ? ` Xem được đến ${new Date(params.availableUntil).toLocaleString('vi-VN')}.` : ''
+      }`,
+      html: `<p>Tài liệu <strong>${params.fileName}</strong> của sự kiện <strong>${title}</strong> đã có thể xem/tải${untilLine}.</p>`,
+    });
+    this.logger.log(`Đã gửi email "tài liệu đã mở" tới ${params.to} — "${params.fileName}"`);
+  }
+
   /** Gửi email MỜI tham gia event, kèm 2 nút Đồng ý/Từ chối bấm ngay trong mail (không cần đăng nhập). */
   async sendEventInvite(params: InviteEmailParams): Promise<void> {
     const start = new Date(params.startTime);

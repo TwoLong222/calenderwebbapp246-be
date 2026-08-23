@@ -1,5 +1,6 @@
 // /api/events/:id/attachments — quản lý tài liệu đính kèm (yêu cầu đăng nhập).
 import {
+  Body,
   Controller,
   Delete,
   Get,
@@ -22,8 +23,8 @@ export class AttachmentsController {
   constructor(private readonly attachments: AttachmentsService) {}
 
   @Get()
-  list(@Req() req: any, @Param('id') eventId: string) {
-    return this.attachments.list(req.supabase, eventId);
+  list(@Req() req: any, @CurrentUser() user: User, @Param('id') eventId: string) {
+    return this.attachments.list(req.supabase, user.id, eventId);
   }
 
   @Post()
@@ -33,8 +34,16 @@ export class AttachmentsController {
     @CurrentUser() user: User,
     @Param('id') eventId: string,
     @UploadedFile() file: any,
+    @Body() body: { availableFrom?: string; availableUntil?: string },
   ) {
-    return this.attachments.upload(req.supabase, user.id, eventId, file);
+    return this.attachments.upload(
+      req.supabase,
+      user.id,
+      eventId,
+      file,
+      body?.availableFrom,
+      body?.availableUntil,
+    );
   }
 
   @Delete(':attId')
