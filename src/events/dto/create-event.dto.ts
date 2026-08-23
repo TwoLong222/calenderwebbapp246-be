@@ -66,9 +66,21 @@ export class CreateEventDto {
   @Max(52)
   repeatCount?: number;
 
+  /** Chu kỳ: lặp mỗi N đơn vị (mỗi 2 tuần, mỗi 3 ngày...). Mặc định 1. */
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Max(30)
+  repeatInterval?: number;
+
   /** Nhắc trước bao nhiêu phút (null/không gửi = không nhắc). */
   @IsOptional()
   @IsInt()
   @IsIn([5, 10, 15, 30, 60, 1440])
   reminderMinutes?: number | null;
+
+  /** Task đã hoàn thành hay chưa. */
+  @IsOptional()
+  @IsBoolean()
+  completed?: boolean;
 }
