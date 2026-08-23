@@ -140,6 +140,31 @@ export class AttachmentsService {
     return out;
   }
 
+  /**
+   * Tài liệu vừa TỚI GIỜ MỞ trong 24h qua, thuộc sự kiện user xem được (RLS lo phần quyền).
+   * Dùng cho thông báo TRONG APP. Bỏ file do chính user tải lên.
+   */
+  async recentAvailable(supabase: SupabaseClient, userId: string) {
+    const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+    const now = new Date().toISOString();
+    const { data, error } = await supabase
+      .from('event_attachments')
+      .select('id, file_name, event_id, available_from, uploaded_by, events(title)')
+      .not('available_from', 'is', null)
+      .gte('available_from', since)
+      .lte('available_from', now);
+    if (error) return []; // cột chưa tồn tại / lỗi -> coi như không có
+    return (data ?? [])
+      .filter((a: any) => a.uploaded_by !== userId)
+      .map((a: any) => ({
+        id: a.id,
+        file_name: a.file_name,
+        event_id: a.event_id,
+        event_title: a.events?.title ?? '',
+        available_from: a.available_from,
+      }));
+  }
+
   /** Chuỗi ISO -> Date, bỏ qua rỗng/không hợp lệ. */
   private parseDate(v?: string | null): Date | null {
     if (!v) return null;
