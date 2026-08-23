@@ -91,7 +91,11 @@ export class AiService {
     this.hits.set(userId, arr);
   }
 
-  async parseCommand(userId: string, userText: string): Promise<AiParseResult> {
+  async parseCommand(
+    userId: string,
+    userText: string,
+    history?: { role: 'user' | 'assistant'; text: string }[],
+  ): Promise<AiParseResult> {
     this.checkRateLimit(userId);
 
     // PHASE 5: AI bị tắt trong Cài đặt -> không xử lý.
@@ -156,9 +160,20 @@ Quy tắc QUAN TRỌNG:
 - NGÔN NGỮ TRẢ LỜI: trường "reply" PHẢI viết bằng ${lang === 'en' ? 'TIẾNG ANH (English)' : 'TIẾNG VIỆT'}, dù người dùng gõ bằng ngôn ngữ nào. Các field khác giữ nguyên.`;
 
     try {
+      // Ghép vài lượt gần nhất để AI hiểu ngữ cảnh (nhớ câu trước).
+      const historyBlock =
+        history && history.length > 0
+          ? 'Hội thoại trước (cũ -> mới):\n' +
+            history
+              .slice(-8)
+              .map((h) => `${h.role === 'user' ? 'Người dùng' : 'Trợ lý'}: ${h.text}`)
+              .join('\n') +
+            '\n\n'
+          : '';
+
       const url = `https://generativelanguage.googleapis.com/v1beta/models/${this.MODEL}:generateContent`;
       const reqBody = JSON.stringify({
-        contents: [{ parts: [{ text: `${systemPrompt}\n\nCâu người dùng: "${userText}"` }] }],
+        contents: [{ parts: [{ text: `${systemPrompt}\n\n${historyBlock}Câu người dùng: "${userText}"` }] }],
         generationConfig: { responseMimeType: 'application/json', temperature: 0.2 },
       });
 
