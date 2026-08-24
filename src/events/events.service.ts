@@ -156,38 +156,6 @@ export class EventsService {
       .filter((e: any) => e && !e.group_id && !e.deleted_at);
   }
 
-  /**
-   * Lời mời của user (khách) mà CHƯA đồng ý (needsAction/tentative) — hiện ở trang "Lời mời".
-   * Dùng adminClient (service_role) vì sau phase9, event chưa đồng ý bị RLS ẩn khỏi client user.
-   * An toàn: lọc đúng theo email trong JWT của user gọi API.
-   */
-  async listInvitations(userEmail: string) {
-    const email = (userEmail ?? '').trim();
-    if (!email) return [];
-    const { data, error } = await this.supabaseService.adminClient
-      .from('event_attendees')
-      .select(
-        'status, event:events(id, title, start_time, end_time, is_all_day, location, color, creator_email, deleted_at)',
-      )
-      .ilike('email', email)
-      .in('status', ['needsAction', 'tentative']);
-    if (error) return [];
-    return (data ?? [])
-      .map((r: any) => ({ status: r.status, ev: r.event }))
-      .filter((r) => r.ev && !r.ev.deleted_at)
-      .map((r) => ({
-        eventId: r.ev.id,
-        title: r.ev.title,
-        startTime: r.ev.start_time,
-        endTime: r.ev.end_time,
-        isAllDay: r.ev.is_all_day,
-        location: r.ev.location,
-        color: r.ev.color,
-        creatorEmail: r.ev.creator_email,
-        myStatus: r.status,
-      }));
-  }
-
   /** Liệt kê các sự kiện của CHÍNH user đang trong thùng rác (mới xóa lên đầu) */
   async listTrash(supabase: SupabaseClient, userId: string) {
     const { data, error } = await supabase
