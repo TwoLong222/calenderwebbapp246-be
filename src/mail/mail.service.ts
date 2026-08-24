@@ -97,6 +97,24 @@ export class MailService {
    * nên toàn bộ tính năng gửi mail dùng chung một đường và không bị lệch hành vi.
    */
   private async deliver(options: Mail.Options): Promise<void> {
+    // AN TOÀN: nếu gửi lỗi (sai SMTP_USER/PASS, sai cấu hình Gmail, mất mạng...) thì CHỈ ghi log,
+    // KHÔNG ném lỗi ra ngoài. Nhờ vậy một email hỏng KHÔNG BAO GIỜ làm sập cả server — kể cả khi
+    // được gọi kiểu "bắn rồi quên" (void ...) hay trong cron. Endpoint test dùng deliverOrThrow.
+    try {
+      await this.deliverOrThrow(options);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      this.logger.error(
+        `Gửi email tới "${options.to}" THẤT BẠI (tầng ${this.mode}): ${message}. ` +
+          `Kiểm tra SMTP_USER/SMTP_PASS (App Password Gmail 16 ký tự) hoặc cấu hình GMAIL_* trong .env. ` +
+          `Server vẫn chạy bình thường, chỉ email này không gửi được.`,
+      );
+    }
+  }
+
+  /** Gửi email và NÉM lỗi nếu thất bại. Chỉ dùng cho endpoint test (/api/mail/test) để báo kết quả
+   *  thật cho người gọi — NestJS tự bắt lỗi trong controller nên không làm sập tiến trình. */
+  private async deliverOrThrow(options: Mail.Options): Promise<void> {
     const mail: Mail.Options = { from: this.fromAddress, ...options };
 
     if (this.mode === 'gmail-api' && this.gmail) {
@@ -291,7 +309,7 @@ export class MailService {
 
   /** Gửi 1 email test đơn giản — chỉ để kiểm tra cấu hình gửi mail có hoạt động không. */
   async sendTestEmail(to: string): Promise<void> {
-    await this.deliver({
+    await this.deliverOrThrow({
       to,
       subject: 'Test gửi mail — Calendar App',
       text: `Nếu bạn nhận được email này, cấu hình gửi mail đã hoạt động ✅ (tầng: ${this.mode})`,

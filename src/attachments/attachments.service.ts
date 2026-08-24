@@ -168,6 +168,70 @@ export class AttachmentsService {
       }));
   }
 
+  /**
+   * TẤT CẢ tài liệu thuộc các sự kiện user xem được (RLS lo phần quyền), GOM NHÓM theo sự kiện.
+   * Dùng cho mục "Tệp đính kèm" trong Cài đặt — mỗi nhóm gồm thông tin sự kiện + danh sách file.
+   */
+  async listAllForUser(supabase: SupabaseClient, userId: string) {
+    const { data, error } = await supabase
+      .from('event_attachments')
+      .select('*, events(id, title, start_time)')
+      .order('created_at', { ascending: false });
+    if (error) throw new BadRequestException(error.message);
+
+    const now = Date.now();
+    const groups = new Map<
+      string,
+      { event_id: string; event_title: string; event_start: string | null; files: any[] }
+    >();
+
+    for (const a of (data ?? []) as any[]) {
+      const ev = a.events ?? null;
+      const from = a.available_from ? new Date(a.available_from).getTime() : null;
+      const until = a.available_until ? new Date(a.available_until).getTime() : null;
+      const isOwner = a.uploaded_by === userId;
+      let status: 'available' | 'scheduled' | 'expired' = 'available';
+      if (!isOwner) {
+        if (from && now < from) status = 'scheduled';
+        else if (until && now > until) status = 'expired';
+      }
+      // Chỉ tạo link tải khi được phép xem.
+      let url: string | null = null;
+      if (status === 'available') {
+        const signed = await this.admin.storage.from(BUCKET).createSignedUrl(a.file_path, 60 * 60);
+        url = signed.data?.signedUrl ?? null;
+      }
+
+      if (!groups.has(a.event_id)) {
+        groups.set(a.event_id, {
+          event_id: a.event_id,
+          event_title: ev?.title ?? '(Sự kiện không còn)',
+          event_start: ev?.start_time ?? null,
+          files: [],
+        });
+      }
+      groups.get(a.event_id)!.files.push({
+        id: a.id,
+        event_id: a.event_id,
+        file_name: a.file_name,
+        mime_type: a.mime_type,
+        size_bytes: a.size_bytes,
+        created_at: a.created_at,
+        available_from: a.available_from ?? null,
+        available_until: a.available_until ?? null,
+        status,
+        url,
+      });
+    }
+
+    // Nhóm có sự kiện diễn ra gần/mới nhất lên đầu; nhóm không rõ thời gian xuống cuối.
+    return [...groups.values()].sort((x, y) => {
+      const tx = x.event_start ? new Date(x.event_start).getTime() : -Infinity;
+      const ty = y.event_start ? new Date(y.event_start).getTime() : -Infinity;
+      return ty - tx;
+    });
+  }
+
   /** Chuỗi ISO -> Date, bỏ qua rỗng/không hợp lệ. */
   private parseDate(v?: string | null): Date | null {
     if (!v) return null;

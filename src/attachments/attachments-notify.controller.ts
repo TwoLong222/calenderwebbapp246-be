@@ -15,4 +15,10 @@ export class AttachmentsNotifyController {
   recent(@Req() req: any, @CurrentUser() user: User) {
     return this.attachments.recentAvailable(req.supabase, user.id);
   }
+
+  /** Tất cả tài liệu của user, gom nhóm theo sự kiện — cho mục "Tệp đính kèm" trong Cài đặt. */
+  @Get('by-event')
+  byEvent(@Req() req: any, @CurrentUser() user: User) {
+    return this.attachments.listAllForUser(req.supabase, user.id);
+  }
 }

@@ -5,7 +5,7 @@
 import { ForbiddenException, NotFoundException } from '@nestjs/common';
 import { GroupsService } from './groups.service';
 
-type Result = { data?: any; error?: any };
+type Result = { data?: any; error?: any; count?: number };
 
 /** Query-builder giả lập: mọi hàm chain trả về chính nó; single/maybeSingle và await trực
  *  tiếp (không gọi single) đều resolve về `result` truyền vào. */

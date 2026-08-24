@@ -19,6 +19,15 @@ interface DueReminderRow {
   location: string | null;
 }
 
+/** Sự kiện cần gửi email nhắc cho CHÍNH CHỦ (get_due_owner_reminders). */
+interface OwnerReminderRow {
+  event_id: string;
+  owner_id: string;
+  event_title: string;
+  start_time: string;
+  location: string | null;
+}
+
 @Injectable()
 export class ReminderService {
   private readonly logger = new Logger(ReminderService.name);
@@ -71,6 +80,76 @@ export class ReminderService {
         this.logger.error(`Gửi email nhắc lịch thất bại cho ${row.attendee_email}`, err as Error);
       }
     }
+  }
+
+  /**
+   * Cron RIÊNG: nhắc qua email cho CHÍNH CHỦ sự kiện (kể cả sự kiện cá nhân không mời ai).
+   * Cần đã chạy migration 2026-08-phase11 (cột owner_reminder_sent_at + hàm get_due_owner_reminders).
+   */
+  @Cron(CronExpression.EVERY_5_MINUTES)
+  async sendDueOwnerReminders(): Promise<void> {
+    const { data, error } = await this.supabaseService.adminClient.rpc('get_due_owner_reminders');
+    if (error) {
+      // Nhiều khả năng chưa chạy migration -> chỉ cảnh báo, không spam lỗi.
+      this.logger.warn(`get_due_owner_reminders lỗi (đã chạy migration phase11 chưa?): ${error.message}`);
+      return;
+    }
+    const rows = (data ?? []) as OwnerReminderRow[];
+    if (rows.length === 0) return;
+    this.logger.log(`Tìm thấy ${rows.length} email nhắc lịch (chủ sự kiện) cần gửi`);
+
+    const { emailById, disabledIds } = await this.getUserEmailMap();
+
+    for (const row of rows) {
+      const markSent = () =>
+        this.supabaseService.adminClient
+          .from('events')
+          .update({ owner_reminder_sent_at: new Date().toISOString() })
+          .eq('id', row.event_id);
+
+      const email = emailById.get(row.owner_id);
+      // Không có email, hoặc chủ đã TẮT nhắc qua email -> đánh dấu để khỏi quét lại vô hạn.
+      if (!email || disabledIds.has(row.owner_id)) {
+        await markSent();
+        continue;
+      }
+      try {
+        await this.mailService.sendEventReminder({
+          to: email,
+          eventTitle: row.event_title,
+          startTime: row.start_time,
+          location: row.location,
+        });
+        await markSent();
+      } catch (err) {
+        // Gửi lỗi -> KHÔNG đánh dấu, lần quét sau (5 phút) thử lại.
+        this.logger.error(`Gửi email nhắc (chủ sự kiện) thất bại cho ${email}`, err as Error);
+      }
+    }
+  }
+
+  /** Map user_id -> email, và tập user_id đã TẮT nhắc lịch qua email (dùng cho nhắc chủ sự kiện). */
+  private async getUserEmailMap(): Promise<{ emailById: Map<string, string>; disabledIds: Set<string> }> {
+    const emailById = new Map<string, string>();
+    const disabledIds = new Set<string>();
+    try {
+      const { data: rows } = await this.supabaseService.adminClient
+        .from('user_settings')
+        .select('user_id, email_preferences');
+      for (const r of (rows ?? []) as any[]) {
+        if (r.email_preferences?.event_reminder === false) disabledIds.add(r.user_id as string);
+      }
+      const { data: list } = await this.supabaseService.adminClient.auth.admin.listUsers({
+        page: 1,
+        perPage: 1000,
+      });
+      for (const u of list?.users ?? []) {
+        if (u.email) emailById.set(u.id, u.email);
+      }
+    } catch (err) {
+      this.logger.warn(`Không đọc được map user->email: ${(err as Error).message}`);
+    }
+    return { emailById, disabledIds };
   }
 
   /**
