@@ -58,7 +58,12 @@ export class GroupsService {
     const ids = groups.map((g) => g.id);
     const counts = new Map<string, number>();
     if (ids.length) {
-      const { data: members } = await supabase.from('group_members').select('group_id').in('group_id', ids);
+      // Chỉ đếm thành viên ĐÃ THAM GIA (joined_at not null) — bỏ lời mời đang chờ/đã từ chối.
+      const { data: members } = await supabase
+        .from('group_members')
+        .select('group_id')
+        .in('group_id', ids)
+        .not('joined_at', 'is', null);
       for (const m of members ?? []) counts.set(m.group_id, (counts.get(m.group_id) ?? 0) + 1);
     }
     return groups.map((g) => ({ ...this.decorate(g, userId), memberCount: counts.get(g.id) ?? 0 }));
@@ -72,7 +77,7 @@ export class GroupsService {
 
     const { data: members } = await supabase
       .from('group_members')
-      .select('user_id, email, role, joined_at')
+      .select('user_id, email, role, joined_at, status')
       .eq('group_id', groupId)
       .order('created_at', { ascending: true });
 
@@ -86,7 +91,10 @@ export class GroupsService {
     // upsert theo (group_id, email): nếu đã mời rồi thì không lỗi
     const { error } = await this.admin
       .from('group_members')
-      .upsert({ group_id: groupId, email: normalized, role: 'member' }, { onConflict: 'group_id,email', ignoreDuplicates: true });
+      .upsert(
+        { group_id: groupId, email: normalized, role: 'member', status: 'pending' },
+        { onConflict: 'group_id,email', ignoreDuplicates: true },
+      );
     if (error) throw error;
     return { ok: true, email: normalized };
   }
@@ -103,6 +111,7 @@ export class GroupsService {
         email: (userEmail || '').toLowerCase(),
         role: group.owner_id === userId ? 'owner' : 'member',
         joined_at: new Date().toISOString(),
+        status: 'accepted', // vào bằng mã = chủ động -> đồng ý luôn
       },
       { onConflict: 'group_id,email' },
     );
@@ -110,20 +119,68 @@ export class GroupsService {
   }
 
   /**
-   * Đồng bộ lời mời: khi user đăng nhập, mọi lời mời gửi theo email của họ (joined_at=null,
-   * user_id=null) được kích hoạt -> gán user_id + joined_at. Nhờ vậy mời-bằng-email tự vào nhóm.
+   * Đồng bộ lời mời khi user đăng nhập: chỉ GẮN tài khoản (user_id) vào các lời mời gửi theo
+   * email của họ mà chưa gắn — VẪN để trạng thái 'pending', CHƯA vào nhóm. Người dùng phải bấm
+   * Đồng ý (acceptInvite) mới thành thành viên. Trả về số lời mời đang chờ để client hiện.
    */
   async syncInvites(userId: string, userEmail: string) {
     const email = (userEmail || '').toLowerCase();
-    if (!email) return { joined: 0 };
+    if (!email) return { pending: 0 };
+    await this.admin
+      .from('group_members')
+      .update({ user_id: userId })
+      .eq('email', email)
+      .is('user_id', null)
+      .eq('status', 'pending');
+    const { data } = await this.admin
+      .from('group_members')
+      .select('group_id')
+      .eq('user_id', userId)
+      .eq('status', 'pending');
+    return { pending: data?.length ?? 0 };
+  }
+
+  /** Danh sách lời mời nhóm ĐANG CHỜ của user (để hiện nút Đồng ý/Từ chối). */
+  async listPendingInvites(userId: string) {
     const { data, error } = await this.admin
       .from('group_members')
-      .update({ user_id: userId, joined_at: new Date().toISOString() })
-      .eq('email', email)
-      .is('joined_at', null)
+      .select('group_id, created_at, groups(id, name)')
+      .eq('user_id', userId)
+      .eq('status', 'pending')
+      .order('created_at', { ascending: false });
+    if (error) throw error;
+    return (data ?? []).map((r: any) => ({
+      group_id: r.group_id,
+      name: r.groups?.name ?? '(nhóm)',
+      invited_at: r.created_at,
+    }));
+  }
+
+  /** Người được mời ĐỒNG Ý -> trở thành thành viên (set joined_at + status accepted). */
+  async acceptInvite(userId: string, groupId: string) {
+    const { data, error } = await this.admin
+      .from('group_members')
+      .update({ status: 'accepted', joined_at: new Date().toISOString() })
+      .eq('group_id', groupId)
+      .eq('user_id', userId)
+      .eq('status', 'pending')
       .select('group_id');
     if (error) throw error;
-    return { joined: data?.length ?? 0 };
+    if (!data?.length) throw new NotFoundException('Không tìm thấy lời mời đang chờ.');
+    return { ok: true };
+  }
+
+  /** Người được mời TỪ CHỐI -> giữ dòng với status='declined' (chủ nhóm vẫn thấy), joined_at
+   *  vẫn null nên KHÔNG vào nhóm. */
+  async declineInvite(userId: string, groupId: string) {
+    const { error } = await this.admin
+      .from('group_members')
+      .update({ status: 'declined' })
+      .eq('group_id', groupId)
+      .eq('user_id', userId)
+      .eq('status', 'pending');
+    if (error) throw error;
+    return { ok: true };
   }
 
   /** Chủ nhóm xóa 1 thành viên (không xóa được chính chủ nhóm). */

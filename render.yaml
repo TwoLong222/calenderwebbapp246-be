@@ -1,0 +1,45 @@
+# Render Blueprint cho backend NestJS.
+# Vào https://dashboard.render.com -> New -> Blueprint -> chọn repo này, Render sẽ đọc file này.
+# Các biến "sync: false" KHÔNG lưu trong file (an toàn) -> tự điền giá trị thật ở dashboard Render.
+
+services:
+  - type: web
+    name: lich-backend
+    runtime: node
+    plan: free # gói miễn phí (ngủ sau ~15 phút không dùng, request đầu chờ ~30-50s để thức dậy)
+    region: singapore # gần VN nhất
+    buildCommand: npm install && npm run build
+    startCommand: node dist/main
+    healthCheckPath: /api
+    envVars:
+      - key: NODE_ENV
+        value: production
+      # --- Supabase (lấy ở Supabase > Settings > API Keys) ---
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_ANON_KEY
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      # --- Trợ lý AI ---
+      - key: GEMINI_API_KEY
+        sync: false
+      # --- Gửi email (Gmail SMTP hoặc dịch vụ khác) ---
+      - key: SMTP_HOST
+        sync: false
+      - key: SMTP_PORT
+        value: "587"
+      - key: SMTP_SECURE
+        value: "false"
+      - key: SMTP_USER
+        sync: false
+      - key: SMTP_PASS
+        sync: false
+      - key: SMTP_FROM
+        sync: false
+      # --- Domain frontend được phép gọi API (đặt sau khi deploy frontend xong) ---
+      - key: CORS_ORIGIN
+        sync: false
+      # --- URL công khai của chính backend này, KÈM /api (cho link trong email) ---
+      - key: PUBLIC_API_URL
+        sync: false

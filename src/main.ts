@@ -10,8 +10,15 @@ import { AppModule } from './app/app.module';
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
 
-   app.enableCors({
-    origin: 'http://localhost:4200',
+  // CORS: domain frontend được phép gọi API. Dev mặc định localhost:4200; production đặt
+  // biến môi trường CORS_ORIGIN = URL frontend thật (nhiều domain thì ngăn cách bằng dấu phẩy),
+  // vd: CORS_ORIGIN=https://lich-cua-ban.vercel.app
+  const corsOrigins = (process.env.CORS_ORIGIN || 'http://localhost:4200')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+  app.enableCors({
+    origin: corsOrigins,
     credentials: true,
   });
 

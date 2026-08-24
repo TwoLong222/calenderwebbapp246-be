@@ -48,6 +48,28 @@ export class GroupsController {
     return this.groups.syncInvites(user.id, user.email ?? '');
   }
 
+  /** Danh sách lời mời nhóm đang chờ user đồng ý. */
+  @Get('invites/pending')
+  pendingInvites(@CurrentUser() user: User) {
+    return this.groups.listPendingInvites(user.id);
+  }
+
+  /** Đồng ý lời mời nhóm -> trở thành thành viên. */
+  @Post(':id/accept')
+  async accept(@CurrentUser() user: User, @Param('id') id: string) {
+    const res = await this.groups.acceptInvite(user.id, id);
+    this.gateway.notifyGroupsChanged(await this.groups.listMemberUserIds(id));
+    return res;
+  }
+
+  /** Từ chối lời mời nhóm (giữ dấu để chủ nhóm biết). */
+  @Post(':id/decline')
+  async decline(@CurrentUser() user: User, @Param('id') id: string) {
+    const res = await this.groups.declineInvite(user.id, id);
+    this.gateway.notifyGroupsChanged(await this.groups.listMemberUserIds(id));
+    return res;
+  }
+
   @Post('join')
   async join(@CurrentUser() user: User, @Body() dto: JoinGroupDto) {
     const group = await this.groups.joinByCode(dto.code, user.id, user.email ?? '');
