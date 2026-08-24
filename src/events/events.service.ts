@@ -93,6 +93,41 @@ export class EventsService {
     );
   }
 
+  /**
+   * Lời mời của user (khách) mà CHƯA trả lời (needsAction/tentative) — để hiện ở chuông
+   * thông báo + trang "Lời mời". Dùng adminClient vì sự kiện chưa Đồng ý bị ẩn khỏi client user.
+   * An toàn: lọc đúng theo email trong JWT của user gọi API.
+   */
+  async listInvitations(userEmail: string) {
+    const email = (userEmail ?? '').trim();
+    if (!email) return [];
+    const { data, error } = await this.supabaseService.adminClient
+      .from('event_attendees')
+      .select(
+        'status, event:events(id, title, start_time, end_time, is_all_day, location, color, creator_email, deleted_at, group_id)',
+      )
+      .ilike('email', email)
+      .in('status', ['needsAction', 'tentative']);
+    if (error) {
+      this.logger.warn(`Không lấy được lời mời cho ${email}: ${error.message}`);
+      return [];
+    }
+    return (data ?? [])
+      .map((r: any) => ({ status: r.status, ev: r.event }))
+      .filter((r) => r.ev && !r.ev.deleted_at && !r.ev.group_id)
+      .map((r) => ({
+        eventId: r.ev.id,
+        title: r.ev.title,
+        startTime: r.ev.start_time,
+        endTime: r.ev.end_time,
+        isAllDay: r.ev.is_all_day,
+        location: r.ev.location,
+        color: r.ev.color,
+        creatorEmail: r.ev.creator_email,
+        myStatus: r.status,
+      }));
+  }
+
   /** Các sự kiện mà user ĐÃ CHẤP NHẬN lời mời (status = 'accepted').
    *  Chỉ sự kiện đã Đồng ý mới vào lịch — lời mời đang chờ (needsAction) hay đã từ chối
    *  (declined) đều KHÔNG hiện, cho tới khi khách bấm "Đồng ý" trong email. */

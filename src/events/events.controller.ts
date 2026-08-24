@@ -29,6 +29,12 @@ export class EventsController {
     return this.eventsService.listTrash(req.supabase, user.id);
   }
 
+  /** Lời mời CHƯA trả lời của user — dùng cho chuông thông báo + trang Lời mời. */
+  @Get('invitations')
+  listInvitations(@CurrentUser() user: User) {
+    return this.eventsService.listInvitations(user.email ?? '');
+  }
+
   /** Khôi phục 1 sự kiện từ thùng rác */
   @Post(':id/restore')
   restore(@Req() req: any, @Param('id') id: string) {
