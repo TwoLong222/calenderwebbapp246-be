@@ -1,14 +1,21 @@
-// MailService: gói gọn việc gửi email qua SMTP (dùng nodemailer).
-// Có thể dùng với bất kỳ nhà cung cấp SMTP nào: Gmail SMTP (kèm App Password),
-// Mailtrap (khuyến nghị để TEST ở môi trường dev — email không gửi thật, chỉ xem trong
-// hộp thư giả lập), Resend, SendGrid SMTP relay...
+// MailService: gửi email cho ứng dụng lịch.
 //
-// Cấu hình qua các biến môi trường trong apps/api/.env:
-//   SMTP_HOST, SMTP_PORT, SMTP_SECURE, SMTP_USER, SMTP_PASS, SMTP_FROM
+// CÓ 2 TẦNG VẬN CHUYỂN, tự chọn theo cấu hình .env:
+//   1) GMAIL API (khuyến nghị — NHANH): gọi REST qua HTTPS (gmail.googleapis.com, cổng 443).
+//      Né được chỗ nghẽn của SMTP -> gửi 1-3s ngay từ lần đầu.
+//      Bật khi có đủ: GMAIL_CLIENT_ID, GMAIL_CLIENT_SECRET, GMAIL_REFRESH_TOKEN, GMAIL_SENDER.
+//   2) SMTP (dự phòng): nodemailer + SMTP như trước (SMTP_HOST/PORT/USER/PASS...).
+//      Tự dùng khi CHƯA cấu hình Gmail API -> không tính năng nào bị gãy.
+//
+// Nội dung/template email vẫn do nodemailer (MailComposer) dựng, dùng chung cho cả 2 tầng,
+// nên đổi tầng vận chuyển KHÔNG ảnh hưởng giao diện email.
 
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import * as nodemailer from 'nodemailer';
+import MailComposer from 'nodemailer/lib/mail-composer';
+import type Mail from 'nodemailer/lib/mailer';
+import { auth as googleAuth, gmail_v1, gmail as gmailApi } from '@googleapis/gmail';
 
 interface ReminderEmailParams {
   to: string;
@@ -33,30 +40,85 @@ interface InviteEmailParams {
 @Injectable()
 export class MailService {
   private readonly logger = new Logger(MailService.name);
-  private readonly transporter: nodemailer.Transporter;
   private readonly fromAddress: string;
 
-  constructor(private readonly config: ConfigService) {
-    this.transporter = nodemailer.createTransport({
-      host: this.config.get<string>('SMTP_HOST'),
-      port: Number(this.config.get<string>('SMTP_PORT') ?? 587),
-      secure: this.config.get<string>('SMTP_SECURE') === 'true',
-      // Giữ sẵn kết nối và tái dùng cho các email sau -> nhanh hơn nhiều (không phải
-      // bắt tay TLS lại từ đầu mỗi lần gửi, vốn rất chậm với SMTP Gmail).
-      pool: true,
-      maxConnections: 3,
-      maxMessages: 100,
-      // Không chờ vô hạn nếu mạng chậm/kẹt.
-      connectionTimeout: 20000,
-      greetingTimeout: 20000,
-      socketTimeout: 30000,
-      auth: {
-        user: this.config.get<string>('SMTP_USER'),
-        pass: this.config.get<string>('SMTP_PASS'),
-      },
-    });
+  /** Tầng đang dùng: 'gmail-api' (nhanh) hoặc 'smtp' (dự phòng). */
+  private readonly mode: 'gmail-api' | 'smtp';
 
-    this.fromAddress = this.config.get<string>('SMTP_FROM') ?? 'no-reply@calender-app.local';
+  // Chỉ 1 trong 2 được khởi tạo, tùy mode.
+  private gmail?: gmail_v1.Gmail;
+  private transporter?: nodemailer.Transporter;
+
+  constructor(private readonly config: ConfigService) {
+    const clientId = this.config.get<string>('GMAIL_CLIENT_ID');
+    const clientSecret = this.config.get<string>('GMAIL_CLIENT_SECRET');
+    const refreshToken = this.config.get<string>('GMAIL_REFRESH_TOKEN');
+    // Người gửi: ưu tiên GMAIL_SENDER, nếu không thì dùng SMTP_USER/SMTP_FROM cho tiện.
+    const gmailSender =
+      this.config.get<string>('GMAIL_SENDER') ??
+      this.config.get<string>('SMTP_USER') ??
+      this.config.get<string>('SMTP_FROM');
+
+    if (clientId && clientSecret && refreshToken && gmailSender) {
+      // ----- Tầng 1: GMAIL API (nhanh) -----
+      const oauth2 = new googleAuth.OAuth2(clientId, clientSecret);
+      oauth2.setCredentials({ refresh_token: refreshToken });
+      this.gmail = gmailApi({ version: 'v1', auth: oauth2 });
+      this.fromAddress = gmailSender;
+      this.mode = 'gmail-api';
+      this.logger.log(`MailService dùng GMAIL API (gửi qua HTTPS) — người gửi ${gmailSender}`);
+    } else {
+      // ----- Tầng 2: SMTP (dự phòng) -----
+      this.transporter = nodemailer.createTransport({
+        host: this.config.get<string>('SMTP_HOST'),
+        port: Number(this.config.get<string>('SMTP_PORT') ?? 587),
+        secure: this.config.get<string>('SMTP_SECURE') === 'true',
+        pool: true,
+        maxConnections: 3,
+        maxMessages: 100,
+        connectionTimeout: 20000,
+        greetingTimeout: 20000,
+        socketTimeout: 30000,
+        auth: {
+          user: this.config.get<string>('SMTP_USER'),
+          pass: this.config.get<string>('SMTP_PASS'),
+        },
+      });
+      this.fromAddress = this.config.get<string>('SMTP_FROM') ?? 'no-reply@calender-app.local';
+      this.mode = 'smtp';
+      this.logger.warn(
+        'MailService dùng SMTP (dự phòng, có thể chậm). Cấu hình GMAIL_CLIENT_ID/SECRET/REFRESH_TOKEN + GMAIL_SENDER để bật Gmail API nhanh hơn.',
+      );
+    }
+  }
+
+  /**
+   * Gửi 1 email. Đây là ĐIỂM DUY NHẤT quyết định tầng vận chuyển — mọi hàm bên dưới đều gọi qua đây,
+   * nên toàn bộ tính năng gửi mail dùng chung một đường và không bị lệch hành vi.
+   */
+  private async deliver(options: Mail.Options): Promise<void> {
+    const mail: Mail.Options = { from: this.fromAddress, ...options };
+
+    if (this.mode === 'gmail-api' && this.gmail) {
+      const raw = await this.buildRawMessage(mail);
+      await this.gmail.users.messages.send({ userId: 'me', requestBody: { raw } });
+      return;
+    }
+
+    // SMTP dự phòng
+    await this.transporter!.sendMail(mail);
+  }
+
+  /** Dựng email thành chuỗi MIME rồi mã hóa base64url — định dạng Gmail API yêu cầu. */
+  private async buildRawMessage(mail: Mail.Options): Promise<string> {
+    const message: Buffer = await new Promise((resolve, reject) => {
+      new MailComposer(mail).compile().build((err, msg) => (err ? reject(err) : resolve(msg)));
+    });
+    return message
+      .toString('base64')
+      .replace(/\+/g, '-')
+      .replace(/\//g, '_')
+      .replace(/=+$/, '');
   }
 
   async sendEventReminder(params: ReminderEmailParams): Promise<void> {
@@ -71,8 +133,7 @@ export class MailService {
 
     const locationLine = params.location ? ` tại <strong>${params.location}</strong>` : '';
 
-    await this.transporter.sendMail({
-      from: this.fromAddress,
+    await this.deliver({
       to: params.to,
       subject: `Nhắc lịch: ${params.eventTitle}`,
       text: `Sự kiện "${params.eventTitle}" sẽ bắt đầu vào ${timeLabel}${params.location ? ` tại ${params.location}` : ''}.`,
@@ -96,8 +157,7 @@ export class MailService {
       ? `<tr><td style="padding:6px 0;color:#374151;font-size:14px">📍&nbsp;&nbsp;${params.location}</td></tr>`
       : '';
 
-    await this.transporter.sendMail({
-      from: this.fromAddress,
+    await this.deliver({
       to: params.to,
       subject: `Lời mời tham gia: ${params.eventTitle}`,
       text: `Bạn được mời tham gia "${params.eventTitle}" vào ${timeLabel}.\nĐồng ý: ${params.acceptUrl}\nTừ chối: ${params.declineUrl}`,
@@ -143,8 +203,7 @@ export class MailService {
   async sendEventUpdated(params: ReminderEmailParams): Promise<void> {
     const timeLabel = this.formatTime(params.startTime);
     const loc = params.location ? ` tại <strong>${params.location}</strong>` : '';
-    await this.transporter.sendMail({
-      from: this.fromAddress,
+    await this.deliver({
       to: params.to,
       subject: `Cập nhật sự kiện: ${params.eventTitle}`,
       text: `Sự kiện "${params.eventTitle}" vừa được cập nhật. Thời gian: ${timeLabel}${params.location ? ` tại ${params.location}` : ''}.`,
@@ -156,8 +215,7 @@ export class MailService {
   /** Email báo sự kiện bị HUỶ tới khách mời. */
   async sendEventCancelled(params: ReminderEmailParams): Promise<void> {
     const timeLabel = this.formatTime(params.startTime);
-    await this.transporter.sendMail({
-      from: this.fromAddress,
+    await this.deliver({
       to: params.to,
       subject: `Huỷ sự kiện: ${params.eventTitle}`,
       text: `Sự kiện "${params.eventTitle}" (${timeLabel}) đã bị huỷ.`,
@@ -169,8 +227,7 @@ export class MailService {
   /** Xác nhận đặt lịch cho người vừa đặt. */
   async sendBookingConfirmation(params: ReminderEmailParams): Promise<void> {
     const timeLabel = this.formatTime(params.startTime);
-    await this.transporter.sendMail({
-      from: this.fromAddress,
+    await this.deliver({
       to: params.to,
       subject: `Xác nhận đặt lịch: ${params.eventTitle}`,
       text: `Bạn đã đặt lịch "${params.eventTitle}" vào ${timeLabel}. Hẹn gặp bạn!`,
@@ -188,8 +245,7 @@ export class MailService {
     startTime: string;
   }): Promise<void> {
     const timeLabel = this.formatTime(params.startTime);
-    await this.transporter.sendMail({
-      from: this.fromAddress,
+    await this.deliver({
       to: params.to,
       subject: `Đặt lịch mới: ${params.inviteeName}`,
       text: `${params.inviteeName} (${params.inviteeEmail}) vừa đặt "${params.eventTitle}" vào ${timeLabel}.`,
@@ -208,15 +264,14 @@ export class MailService {
     });
   }
 
-  /** Gửi 1 email test đơn giản — chỉ để kiểm tra cấu hình SMTP có hoạt động không. */
+  /** Gửi 1 email test đơn giản — chỉ để kiểm tra cấu hình gửi mail có hoạt động không. */
   async sendTestEmail(to: string): Promise<void> {
-    await this.transporter.sendMail({
-      from: this.fromAddress,
+    await this.deliver({
       to,
       subject: 'Test gửi mail — Calendar App',
-      text: 'Nếu bạn nhận được email này, cấu hình SMTP đã hoạt động ✅',
-      html: '<p>Nếu bạn nhận được email này, cấu hình SMTP đã hoạt động ✅</p>',
+      text: `Nếu bạn nhận được email này, cấu hình gửi mail đã hoạt động ✅ (tầng: ${this.mode})`,
+      html: `<p>Nếu bạn nhận được email này, cấu hình gửi mail đã hoạt động ✅</p><p style="color:#6b7280;font-size:12px">Tầng vận chuyển: <strong>${this.mode}</strong></p>`,
     });
-    this.logger.log(`Đã gửi email test tới ${to}`);
+    this.logger.log(`Đã gửi email test tới ${to} (tầng: ${this.mode})`);
   }
 }
