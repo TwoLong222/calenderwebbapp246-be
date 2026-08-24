@@ -78,14 +78,17 @@ export class EventsService {
     );
   }
 
-  /** Các sự kiện mà email của user nằm trong danh sách khách mời (đọc bằng service_role). */
+  /** Các sự kiện mà user ĐÃ CHẤP NHẬN lời mời (status = 'accepted').
+   *  Chỉ sự kiện đã Đồng ý mới vào lịch — lời mời đang chờ (needsAction) hay đã từ chối
+   *  (declined) đều KHÔNG hiện, cho tới khi khách bấm "Đồng ý" trong email. */
   private async listInvitedEvents(userEmail?: string): Promise<any[]> {
     if (!userEmail) return [];
     const admin = this.supabaseService.adminClient;
     const { data, error } = await admin
       .from('event_attendees')
       .select('event:events(*, attendees:event_attendees(*))')
-      .ilike('email', userEmail); // khớp không phân biệt hoa/thường
+      .ilike('email', userEmail) // khớp không phân biệt hoa/thường
+      .eq('status', 'accepted'); // chỉ lấy sự kiện đã được khách Đồng ý
 
     if (error) {
       this.logger.warn(`Không lấy được sự kiện được mời cho ${userEmail}: ${error.message}`);
