@@ -8,7 +8,9 @@ services:
     runtime: node
     plan: free # gói miễn phí (ngủ sau ~15 phút không dùng, request đầu chờ ~30-50s để thức dậy)
     region: singapore # gần VN nhất
-    buildCommand: npm install && npm run build
+    # --include=dev: BẮT BUỘC cài cả devDependencies (chứa @nestjs/cli -> lệnh `nest build`),
+    # vì NODE_ENV=production khiến `npm install` mặc định bỏ qua devDependencies -> lỗi 127.
+    buildCommand: npm install --include=dev && npm run build
     startCommand: node dist/main
     healthCheckPath: /api
     envVars:
