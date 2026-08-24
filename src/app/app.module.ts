@@ -12,6 +12,7 @@ import { AiModule } from '../ai/ai.module';
 import { SettingsModule } from '../settings/settings.module';
 import { BookingModule } from '../booking/booking.module';
 import { GroupsModule } from '../groups/groups.module';
+import { AttachmentsModule } from '../attachments/attachments.module';
 
 @Module({
   imports: [
@@ -25,7 +26,8 @@ import { GroupsModule } from '../groups/groups.module';
     AiModule,
     SettingsModule,
     BookingModule,
-    GroupsModule,],
+    GroupsModule,
+    AttachmentsModule,],
   controllers: [AppController],
   providers: [AppService],
 })

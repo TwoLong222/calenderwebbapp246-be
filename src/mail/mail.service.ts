@@ -224,6 +224,31 @@ export class MailService {
     this.logger.log(`Đã gửi email huỷ tới ${params.to} — "${params.eventTitle}"`);
   }
 
+  /** Email báo tài liệu đính kèm vừa TỚI GIỜ MỞ (khách có thể tải về). */
+  async sendAttachmentAvailable(params: {
+    to: string;
+    eventTitle: string;
+    fileName: string;
+    availableUntil: string | null;
+  }): Promise<void> {
+    const untilLabel = params.availableUntil
+      ? this.formatTime(params.availableUntil)
+      : null;
+    const untilLine = untilLabel
+      ? ` Tài liệu mở đến hết <strong>${untilLabel}</strong>.`
+      : '';
+    const untilText = untilLabel ? ` Mở đến hết ${untilLabel}.` : '';
+
+    await this.deliver({
+      to: params.to,
+      subject: `Tài liệu mới đã mở: ${params.eventTitle}`,
+      text: `Tài liệu "${params.fileName}" của sự kiện "${params.eventTitle}" đã có thể tải về.${untilText}`,
+      html: `<p>Tài liệu <strong>${params.fileName}</strong> của sự kiện <strong>${params.eventTitle}</strong> đã có thể tải về.${untilLine}</p><p style="color:#6b7280;font-size:13px">Mở ứng dụng Lịch để xem và tải tài liệu.</p>`,
+    });
+
+    this.logger.log(`Đã gửi email "tài liệu đã mở" tới ${params.to} — "${params.fileName}"`);
+  }
+
   /** Xác nhận đặt lịch cho người vừa đặt. */
   async sendBookingConfirmation(params: ReminderEmailParams): Promise<void> {
     const timeLabel = this.formatTime(params.startTime);
