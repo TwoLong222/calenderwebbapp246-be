@@ -53,7 +53,7 @@ export class EventsService {
     return data.id;
   }
 
-  async listEvents(supabase: SupabaseClient, userEmail?: string) {
+  async listEvents(supabase: SupabaseClient, userEmail?: string, userId?: string) {
     const { data, error } = await supabase
       .from('events')
       .select('*, attendees:event_attendees(*)')
@@ -73,7 +73,22 @@ export class EventsService {
     // Gộp + khử trùng theo id (sự kiện mình vừa tạo cũng có mình trong danh sách mời).
     const byId = new Map<string, any>();
     for (const e of [...own, ...invited]) byId.set(e.id, e);
-    return [...byId.values()].sort((a, b) =>
+
+    // QUAN TRỌNG: chính sách RLS "khách đọc sự kiện được mời" cho phép khách đọc sự kiện
+    // BẤT KỂ trạng thái -> nó lọt vào truy vấn `own` nên khách chưa Đồng ý vẫn thấy.
+    // Lọc lại: chỉ hiện sự kiện được mời khi đã 'accepted'. Vẫn giữ nếu mình là NGƯỜI TẠO
+    // hoặc mình KHÔNG nằm trong danh sách khách (vd lịch chia sẻ).
+    const email = userEmail?.toLowerCase();
+    const visible = [...byId.values()].filter((e: any) => {
+      if (userId && e.creator_id === userId) return true; // sự kiện của chính mình
+      const mine = (e.attendees ?? []).find(
+        (a: any) => a.email?.toLowerCase() === email,
+      );
+      if (!mine) return true; // không phải khách mời -> lịch chia sẻ/khác, giữ nguyên
+      return mine.status === 'accepted'; // là khách -> chỉ hiện khi đã Đồng ý
+    });
+
+    return visible.sort((a, b) =>
       (a.start_time ?? '') < (b.start_time ?? '') ? -1 : 1,
     );
   }
