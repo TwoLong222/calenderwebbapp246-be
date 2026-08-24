@@ -60,7 +60,7 @@ export class EventsService {
     return data.id;
   }
 
-  async listEvents(supabase: SupabaseClient, userEmail?: string) {
+  async listEvents(supabase: SupabaseClient, userEmail?: string, userId?: string) {
     const { data, error } = await supabase
       .from('events')
       .select('*, attendees:event_attendees(*)')
@@ -80,19 +80,72 @@ export class EventsService {
     // Gộp + khử trùng theo id (sự kiện mình vừa tạo cũng có mình trong danh sách mời).
     const byId = new Map<string, any>();
     for (const e of [...own, ...invited]) byId.set(e.id, e);
-    return [...byId.values()].sort((a, b) =>
+
+    // QUAN TRỌNG: chính sách RLS "khách đọc sự kiện được mời" cho phép khách đọc sự kiện
+    // BẤT KỂ trạng thái -> nó lọt vào truy vấn `own` nên khách chưa Đồng ý vẫn thấy.
+    // Lọc lại: chỉ hiện sự kiện được mời khi đã 'accepted'. Vẫn giữ nếu mình là NGƯỜI TẠO
+    // hoặc mình KHÔNG nằm trong danh sách khách (vd lịch chia sẻ).
+    const email = userEmail?.toLowerCase();
+    const visible = [...byId.values()].filter((e: any) => {
+      if (userId && e.creator_id === userId) return true; // sự kiện của chính mình
+      const mine = (e.attendees ?? []).find(
+        (a: any) => a.email?.toLowerCase() === email,
+      );
+      if (!mine) return true; // không phải khách mời -> lịch chia sẻ/khác, giữ nguyên
+      return mine.status === 'accepted'; // là khách -> chỉ hiện khi đã Đồng ý
+    });
+
+    return visible.sort((a, b) =>
       (a.start_time ?? '') < (b.start_time ?? '') ? -1 : 1,
     );
   }
 
-  /** Các sự kiện mà email của user nằm trong danh sách khách mời (đọc bằng service_role). */
+  /**
+   * Lời mời của user (khách) mà CHƯA trả lời (needsAction/tentative) — để hiện ở chuông
+   * thông báo + trang "Lời mời". Dùng adminClient vì sự kiện chưa Đồng ý bị ẩn khỏi client user.
+   * An toàn: lọc đúng theo email trong JWT của user gọi API.
+   */
+  async listInvitations(userEmail: string) {
+    const email = (userEmail ?? '').trim();
+    if (!email) return [];
+    const { data, error } = await this.supabaseService.adminClient
+      .from('event_attendees')
+      .select(
+        'status, event:events(id, title, start_time, end_time, is_all_day, location, color, creator_email, deleted_at, group_id)',
+      )
+      .ilike('email', email)
+      .in('status', ['needsAction', 'tentative']);
+    if (error) {
+      this.logger.warn(`Không lấy được lời mời cho ${email}: ${error.message}`);
+      return [];
+    }
+    return (data ?? [])
+      .map((r: any) => ({ status: r.status, ev: r.event }))
+      .filter((r) => r.ev && !r.ev.deleted_at && !r.ev.group_id)
+      .map((r) => ({
+        eventId: r.ev.id,
+        title: r.ev.title,
+        startTime: r.ev.start_time,
+        endTime: r.ev.end_time,
+        isAllDay: r.ev.is_all_day,
+        location: r.ev.location,
+        color: r.ev.color,
+        creatorEmail: r.ev.creator_email,
+        myStatus: r.status,
+      }));
+  }
+
+  /** Các sự kiện mà user ĐÃ CHẤP NHẬN lời mời (status = 'accepted').
+   *  Chỉ sự kiện đã Đồng ý mới vào lịch — lời mời đang chờ (needsAction) hay đã từ chối
+   *  (declined) đều KHÔNG hiện, cho tới khi khách bấm "Đồng ý" trong email. */
   private async listInvitedEvents(userEmail?: string): Promise<any[]> {
     if (!userEmail) return [];
     const admin = this.supabaseService.adminClient;
     const { data, error } = await admin
       .from('event_attendees')
       .select('event:events(*, attendees:event_attendees(*))')
-      .ilike('email', userEmail); // khớp không phân biệt hoa/thường
+      .ilike('email', userEmail) // khớp không phân biệt hoa/thường
+      .eq('status', 'accepted'); // chỉ lấy sự kiện đã được khách Đồng ý
 
     if (error) {
       this.logger.warn(`Không lấy được sự kiện được mời cho ${userEmail}: ${error.message}`);

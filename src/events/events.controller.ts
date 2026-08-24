@@ -18,8 +18,9 @@ export class EventsController {
 
   @Get()
   list(@Req() req: any, @CurrentUser() user: User) {
-    // Truyền email để lấy thêm các sự kiện user ĐƯỢC MỜI (nằm trên lịch người khác).
-    return this.eventsService.listEvents(req.supabase, user.email ?? '');
+    // Truyền email + id: email để lấy sự kiện ĐƯỢC MỜI; id để nhận diện sự kiện của
+    // chính mình khi lọc bỏ lời mời chưa Đồng ý.
+    return this.eventsService.listEvents(req.supabase, user.email ?? '', user.id);
   }
 
   /** Danh sách sự kiện trong thùng rác của user */
@@ -28,7 +29,7 @@ export class EventsController {
     return this.eventsService.listTrash(req.supabase, user.id);
   }
 
-  /** Lời mời chưa trả lời của user (để bấm Đồng ý/Từ chối) */
+  /** Lời mời CHƯA trả lời của user — dùng cho chuông thông báo + trang Lời mời. */
   @Get('invitations')
   listInvitations(@CurrentUser() user: User) {
     return this.eventsService.listInvitations(user.email ?? '');
