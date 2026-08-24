@@ -2,7 +2,7 @@
 // TỚI GIỜ MỞ (available_from <= now) mà chưa thông báo (notified_at null), rồi gửi
 // EMAIL cho khách tham gia sự kiện + đánh dấu notified_at để không gửi trùng.
 //
-// Phần thông báo TRONG APP do client tự quét (endpoint /attachments/recent-available) —
+// Phần thông báo TRONG APP do client tự quét (endpoint /events/:id/attachments) —
 // đây chỉ lo phần email chạy nền (khách không cần mở app vẫn nhận được).
 
 import { Injectable, Logger } from '@nestjs/common';
@@ -35,7 +35,7 @@ export class AttachmentReminderService {
       .lte('available_from', nowIso);
 
     if (error) {
-      // Cột chưa tồn tại (migration chưa chạy) -> im lặng bỏ qua.
+      // Cột chưa tồn tại (migration phase8 chưa chạy) -> im lặng bỏ qua.
       if (/available_from|notified_at|column/i.test(error.message)) return;
       // Lệch giờ máy <-> Supabase (PGRST303 "JWT issued at future") -> tạm thời, chỉ cảnh báo.
       if ((error as any).code === 'PGRST303' || /issued at future|jwt/i.test(error.message)) {

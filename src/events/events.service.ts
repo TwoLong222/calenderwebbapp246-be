@@ -44,8 +44,15 @@ export class EventsService {
     private readonly settings: SettingsService,
   ) {}
 
-  private async getPrimaryCalendarId(supabase: SupabaseClient): Promise<string> {
-    const { data, error } = await supabase.from('calendars').select('id').eq('is_primary', true).single();
+  private async getPrimaryCalendarId(supabase: SupabaseClient, userId: string): Promise<string> {
+    // PHASE 6D: lọc thêm owner_id — vì sau khi chia sẻ lịch, RLS còn trả các lịch
+    // được chia sẻ cho mình (có thể is_primary=true) -> .single() sẽ vỡ nếu không lọc.
+    const { data, error } = await supabase
+      .from('calendars')
+      .select('id')
+      .eq('is_primary', true)
+      .eq('owner_id', userId)
+      .single();
 
     if (error || !data) {
       throw new Error('Không tìm thấy Lịch chính của người dùng này.');
@@ -188,20 +195,26 @@ export class EventsService {
   }
 
   /** Dời 1 mốc thời gian ISO theo chu kỳ lặp cho lần thứ i (i=0 là lần gốc) */
-  private shiftDate(iso: string, repeat: 'none' | 'daily' | 'weekly' | 'monthly', i: number): string {
+  private shiftDate(
+    iso: string,
+    repeat: 'none' | 'daily' | 'weekly' | 'monthly',
+    i: number,
+    interval = 1,
+  ): string {
     const d = new Date(iso);
     if (i === 0 || repeat === 'none') return d.toISOString();
-    if (repeat === 'daily') d.setDate(d.getDate() + i);
-    else if (repeat === 'weekly') d.setDate(d.getDate() + i * 7);
-    else if (repeat === 'monthly') d.setMonth(d.getMonth() + i);
+    if (repeat === 'daily') d.setDate(d.getDate() + i * interval);
+    else if (repeat === 'weekly') d.setDate(d.getDate() + i * 7 * interval);
+    else if (repeat === 'monthly') d.setMonth(d.getMonth() + i * interval);
     return d.toISOString();
   }
 
   async createEvent(supabase: SupabaseClient, userId: string, userEmail: string, dto: CreateEventDto) {
-    const calendarId = await this.getPrimaryCalendarId(supabase);
+    const calendarId = await this.getPrimaryCalendarId(supabase, userId);
     const repeat = dto.repeat ?? 'none';
     // Số lần lặp: 'none' -> 1, còn lại lấy repeatCount (chặn trong [1, 52])
     const count = repeat === 'none' ? 1 : Math.min(Math.max(dto.repeatCount ?? 1, 1), 52);
+    const interval = Math.min(Math.max(dto.repeatInterval ?? 1, 1), 30);
 
     // Cảnh báo trùng lịch tính cho lần ĐẦU, TRƯỚC khi insert (để không tự trùng chính event vừa tạo)
     const conflicts = dto.isAllDay
@@ -217,12 +230,13 @@ export class EventsService {
       title: dto.title,
       description: dto.description ?? null,
       location: dto.location ?? null,
-      start_time: this.shiftDate(dto.startTime, repeat, i),
-      end_time: this.shiftDate(dto.endTime, repeat, i),
+      start_time: this.shiftDate(dto.startTime, repeat, i, interval),
+      end_time: this.shiftDate(dto.endTime, repeat, i, interval),
       is_all_day: dto.isAllDay ?? false,
       kind: dto.kind ?? 'event',
       color: dto.color ?? 'sky',
-      reminder_minutes: dto.reminderMinutes ?? null,
+      // Chỉ set khi là số -> tránh lỗi nếu DB chưa chạy migration reminder_minutes.
+      ...(typeof dto.reminderMinutes === 'number' ? { reminder_minutes: dto.reminderMinutes } : {}),
       series_id: seriesId,
       creator_id: userId,
       creator_email: userEmail || null,
@@ -248,6 +262,13 @@ export class EventsService {
             location: dto.location ?? null,
           });
         }
+      }
+    }
+
+    // Có đặt nhắc -> tự thêm chính người tạo vào danh sách để nhận email nhắc (mọi lần lặp).
+    if (typeof dto.reminderMinutes === 'number') {
+      for (const ev of events) {
+        await this.ensureCreatorAttendee(supabase, ev.id, userEmail);
       }
     }
 
@@ -290,7 +311,8 @@ export class EventsService {
     if (dto.isAllDay !== undefined) patch['is_all_day'] = dto.isAllDay;
     if (dto.kind !== undefined) patch['kind'] = dto.kind;
     if (dto.color !== undefined) patch['color'] = dto.color;
-    if (dto.reminderMinutes !== undefined) patch['reminder_minutes'] = dto.reminderMinutes;
+    if (typeof dto.reminderMinutes === 'number') patch['reminder_minutes'] = dto.reminderMinutes;
+    if (typeof dto.completed === 'boolean') patch['completed'] = dto.completed;
 
     const { data: event, error } = await supabase.from('events').update(patch).eq('id', id).select().maybeSingle();
     if (error) throw error;
@@ -333,6 +355,12 @@ export class EventsService {
         startTime: event.start_time,
         location: event.location ?? null,
       });
+    }
+
+    // Nếu sự kiện có đặt nhắc, đảm bảo người tạo vẫn trong danh sách nhắc (kể cả sau khi
+    // syncAttendees có thể đã loại bỏ họ khỏi danh sách khách mời gửi lên từ frontend).
+    if (event.reminder_minutes != null) {
+      await this.ensureCreatorAttendee(supabase, id, event.creator_email);
     }
 
     const attendees = await this.getAttendees(supabase, id);
@@ -456,6 +484,28 @@ export class EventsService {
     if (error) throw error;
     if (!data) throw new ForbiddenException('Không gỡ được link Meet cho sự kiện này.');
     return data;
+  }
+
+  /**
+   * Đảm bảo NGƯỜI TẠO có mặt trong danh sách khách mời (status 'accepted') để tự nhận email
+   * nhắc lịch — kể cả khi sự kiện không mời ai khác. KHÔNG gửi email mời cho chính mình.
+   * Bỏ qua nếu đã có (dùng lại record cũ, giữ nguyên trạng thái RSVP).
+   */
+  private async ensureCreatorAttendee(
+    supabase: SupabaseClient,
+    eventId: string,
+    creatorEmail: string | null | undefined,
+  ) {
+    const email = (creatorEmail ?? '').trim();
+    if (!email) return;
+    const { data: existing } = await supabase
+      .from('event_attendees')
+      .select('email')
+      .eq('event_id', eventId);
+    const has = (existing ?? []).some((a) => a.email.toLowerCase() === email.toLowerCase());
+    if (has) return;
+    // status 'accepted' -> không cần RSVP; không có respond_token -> không phải khách mời "thật".
+    await supabase.from('event_attendees').insert({ event_id: eventId, email, status: 'accepted' });
   }
 
   /**

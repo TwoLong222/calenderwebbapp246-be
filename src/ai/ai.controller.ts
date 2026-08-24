@@ -15,6 +15,6 @@ export class AiController {
 
   @Post('chat')
   chat(@CurrentUser() user: User, @Body() dto: AiChatDto) {
-    return this.ai.parseCommand(user.id, dto.message);
+    return this.ai.parseCommand(user.id, dto.message, dto.history);
   }
 }

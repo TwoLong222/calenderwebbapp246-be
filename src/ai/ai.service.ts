@@ -35,7 +35,10 @@ export interface AiParseResult {
 @Injectable()
 export class AiService {
   private readonly logger = new Logger(AiService.name);
-  private readonly MODEL = 'gemini-3.6-flash';
+  /** Model Gemini — chỉnh được qua .env GEMINI_MODEL. Mặc định giữ model đang chạy tốt trên key hiện tại. */
+  private get MODEL(): string {
+    return this.config.get<string>('GEMINI_MODEL') ?? 'gemini-3.6-flash';
+  }
 
   // Rate-limit đơn giản trong bộ nhớ: tối đa 20 request / user / giờ
   private readonly hits = new Map<string, number[]>();
@@ -91,7 +94,11 @@ export class AiService {
     this.hits.set(userId, arr);
   }
 
-  async parseCommand(userId: string, userText: string): Promise<AiParseResult> {
+  async parseCommand(
+    userId: string,
+    userText: string,
+    history?: { role: 'user' | 'assistant'; text: string }[],
+  ): Promise<AiParseResult> {
     this.checkRateLimit(userId);
 
     // PHASE 5: AI bị tắt trong Cài đặt -> không xử lý.
@@ -149,12 +156,27 @@ Quy tắc QUAN TRỌNG:
 - Thời LƯỢNG thì được mặc định 1 tiếng nếu người dùng không nói.
 - reschedule: nếu không có giờ mới -> "unclear" hỏi "Dời sang lúc nào?".
 - Chỉ điền field liên quan tới intent. Không rõ ý -> "unclear" + hỏi lại.
+- CHÀO HỎI / NÓI CHUYỆN PHIẾM (vd "hi", "ok", "cảm ơn", "im", "ko cần"): intent="unclear",
+  trả lời NGẮN GỌN, THÂN THIỆN, TỰ NHIÊN (đừng lặp y hệt mỗi lần) và LỒNG 1 ví dụ lệnh cụ thể
+  để gợi ý, vd: "Mình giúp bạn quản lý lịch nè — thử: 'mai 3h họp nhóm 1 tiếng' xem 😄".
+  Nếu người dùng tỏ ý dừng ("thôi", "ko cần", "im") thì đáp lịch sự, ngắn, KHÔNG hỏi lại dồn dập.
 - NGÔN NGỮ TRẢ LỜI: trường "reply" PHẢI viết bằng ${lang === 'en' ? 'TIẾNG ANH (English)' : 'TIẾNG VIỆT'}, dù người dùng gõ bằng ngôn ngữ nào. Các field khác giữ nguyên.`;
 
     try {
+      // Ghép vài lượt gần nhất để AI hiểu ngữ cảnh (nhớ câu trước).
+      const historyBlock =
+        history && history.length > 0
+          ? 'Hội thoại trước (cũ -> mới):\n' +
+            history
+              .slice(-8)
+              .map((h) => `${h.role === 'user' ? 'Người dùng' : 'Trợ lý'}: ${h.text}`)
+              .join('\n') +
+            '\n\n'
+          : '';
+
       const url = `https://generativelanguage.googleapis.com/v1beta/models/${this.MODEL}:generateContent`;
       const reqBody = JSON.stringify({
-        contents: [{ parts: [{ text: `${systemPrompt}\n\nCâu người dùng: "${userText}"` }] }],
+        contents: [{ parts: [{ text: `${systemPrompt}\n\n${historyBlock}Câu người dùng: "${userText}"` }] }],
         generationConfig: { responseMimeType: 'application/json', temperature: 0.2 },
       });
 

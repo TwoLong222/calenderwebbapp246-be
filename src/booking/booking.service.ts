@@ -152,6 +152,7 @@ export class BookingService {
     }
 
     const calId = await this.primaryCalendarId(page.user_id);
+    const owner = await this.ownerEmail(page.user_id);
     const { data: ev, error } = await this.admin
       .from('events')
       .insert({
@@ -162,6 +163,7 @@ export class BookingService {
         end_time: new Date(end).toISOString(),
         color: 'violet',
         creator_id: page.user_id,
+        creator_email: owner,
       })
       .select('id')
       .single();
@@ -178,7 +180,6 @@ export class BookingService {
       startTime: new Date(start).toISOString(),
       location: null,
     });
-    const owner = await this.ownerEmail(page.user_id);
     if (owner && (await this.settings.isEmailEnabled(page.user_id, 'booking_notification'))) {
       void this.mail.sendBookingNotification({
         to: owner,

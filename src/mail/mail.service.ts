@@ -149,16 +149,45 @@ export class MailService {
       minute: '2-digit',
     });
 
+    // Sự kiện không đặt tên -> hiện "(không tiêu đề)" cho khớp thông báo trong app.
+    const title = params.eventTitle?.trim() || '(không tiêu đề)';
     const locationLine = params.location ? ` tại <strong>${params.location}</strong>` : '';
 
     await this.deliver({
       to: params.to,
-      subject: `Nhắc lịch: ${params.eventTitle}`,
-      text: `Sự kiện "${params.eventTitle}" sẽ bắt đầu vào ${timeLabel}${params.location ? ` tại ${params.location}` : ''}.`,
-      html: `<p>Sự kiện <strong>${params.eventTitle}</strong> sẽ bắt đầu vào <strong>${timeLabel}</strong>${locationLine}.</p>`,
+      subject: `Nhắc lịch: ${title}`,
+      text: `Sự kiện "${title}" sẽ bắt đầu vào ${timeLabel}${params.location ? ` tại ${params.location}` : ''}.`,
+      html: `<p>Sự kiện <strong>${title}</strong> sẽ bắt đầu vào <strong>${timeLabel}</strong>${locationLine}.</p>`,
     });
 
-    this.logger.log(`Đã gửi email nhắc lịch tới ${params.to} — sự kiện "${params.eventTitle}"`);
+    this.logger.log(`Đã gửi email nhắc lịch tới ${params.to} — sự kiện "${title}"`);
+  }
+
+  /** Báo cho khách rằng tài liệu đính kèm của sự kiện đã tới giờ xem được. */
+  async sendAttachmentAvailable(params: {
+    to: string;
+    eventTitle: string;
+    fileName: string;
+    /** ISO string, hạn xem tới lúc nào (nếu có). */
+    availableUntil?: string | null;
+  }): Promise<void> {
+    const title = params.eventTitle?.trim() || '(không tiêu đề)';
+    let untilLine = '';
+    if (params.availableUntil) {
+      const until = new Date(params.availableUntil).toLocaleString('vi-VN', {
+        weekday: 'long', day: 'numeric', month: 'numeric', hour: '2-digit', minute: '2-digit',
+      });
+      untilLine = ` (xem được đến <strong>${until}</strong>)`;
+    }
+    await this.deliver({
+      to: params.to,
+      subject: `Tài liệu đã mở: ${title}`,
+      text: `Tài liệu "${params.fileName}" của sự kiện "${title}" đã có thể xem/tải.${
+        params.availableUntil ? ` Xem được đến ${new Date(params.availableUntil).toLocaleString('vi-VN')}.` : ''
+      }`,
+      html: `<p>Tài liệu <strong>${params.fileName}</strong> của sự kiện <strong>${title}</strong> đã có thể xem/tải${untilLine}.</p>`,
+    });
+    this.logger.log(`Đã gửi email "tài liệu đã mở" tới ${params.to} — "${params.fileName}"`);
   }
 
   /** Gửi email MỜI tham gia event, kèm 2 nút Đồng ý/Từ chối bấm ngay trong mail (không cần đăng nhập). */
@@ -240,31 +269,6 @@ export class MailService {
       html: `<p>Sự kiện <strong>${params.eventTitle}</strong> (${timeLabel}) đã bị <strong>huỷ</strong>.</p>`,
     });
     this.logger.log(`Đã gửi email huỷ tới ${params.to} — "${params.eventTitle}"`);
-  }
-
-  /** Email báo tài liệu đính kèm vừa TỚI GIỜ MỞ (khách có thể tải về). */
-  async sendAttachmentAvailable(params: {
-    to: string;
-    eventTitle: string;
-    fileName: string;
-    availableUntil: string | null;
-  }): Promise<void> {
-    const untilLabel = params.availableUntil
-      ? this.formatTime(params.availableUntil)
-      : null;
-    const untilLine = untilLabel
-      ? ` Tài liệu mở đến hết <strong>${untilLabel}</strong>.`
-      : '';
-    const untilText = untilLabel ? ` Mở đến hết ${untilLabel}.` : '';
-
-    await this.deliver({
-      to: params.to,
-      subject: `Tài liệu mới đã mở: ${params.eventTitle}`,
-      text: `Tài liệu "${params.fileName}" của sự kiện "${params.eventTitle}" đã có thể tải về.${untilText}`,
-      html: `<p>Tài liệu <strong>${params.fileName}</strong> của sự kiện <strong>${params.eventTitle}</strong> đã có thể tải về.${untilLine}</p><p style="color:#6b7280;font-size:13px">Mở ứng dụng Lịch để xem và tải tài liệu.</p>`,
-    });
-
-    this.logger.log(`Đã gửi email "tài liệu đã mở" tới ${params.to} — "${params.fileName}"`);
   }
 
   /** Xác nhận đặt lịch cho người vừa đặt. */
