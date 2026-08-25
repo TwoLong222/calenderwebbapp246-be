@@ -15,7 +15,7 @@ export class SharingService {
     const calId = await this.primaryCalendarId(supabase, userId);
     const { data, error } = await supabase
       .from('calendar_members')
-      .select('member_email, role, created_at')
+      .select('member_email, role, created_at, share_from, share_until')
       .eq('calendar_id', calId)
       .order('created_at', { ascending: true });
     if (error) throw new BadRequestException(error.message);
@@ -34,13 +34,21 @@ export class SharingService {
       throw new BadRequestException('Không thể chia sẻ lịch cho chính mình.');
     }
     const calId = await this.primaryCalendarId(supabase, userId);
+    // Rỗng/không gửi -> null (không giới hạn). Chuẩn hoá về ISO.
+    const toIso = (v?: string | null) => (v ? new Date(v).toISOString() : null);
     const { data, error } = await supabase
       .from('calendar_members')
       .upsert(
-        { calendar_id: calId, member_email: email, role: dto.role ?? 'viewer' },
+        {
+          calendar_id: calId,
+          member_email: email,
+          role: dto.role ?? 'viewer',
+          share_from: toIso(dto.shareFrom),
+          share_until: toIso(dto.shareUntil),
+        },
         { onConflict: 'calendar_id,member_email' },
       )
-      .select('member_email, role, created_at')
+      .select('member_email, role, created_at, share_from, share_until')
       .single();
     if (error) throw new BadRequestException(error.message);
     return data;
