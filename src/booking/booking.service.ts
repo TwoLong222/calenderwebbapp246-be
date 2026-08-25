@@ -99,8 +99,19 @@ export class BookingService {
     return { slug: page.slug, title: page.title, durationMinutes: page.duration_minutes };
   }
 
-  /** Danh sách khung giờ trống (ISO) trong DAYS_AHEAD ngày tới. */
-  async getSlots(slug: string): Promise<{ durationMinutes: number; slots: string[] }> {
+  /**
+   * Danh sách khung giờ trống (ISO) trong DAYS_AHEAD ngày tới.
+   * Trả kèm GIỜ LÀM VIỆC + số ngày quét để trang công khai giải thích được vì sao
+   * chỉ hiện một số ngày (bỏ ngày nghỉ, bỏ khung đã bận) — tránh nhìn như "tùm lum".
+   */
+  async getSlots(slug: string): Promise<{
+    durationMinutes: number;
+    slots: string[];
+    workingDays: number[];
+    workingStart: string;
+    workingEnd: string;
+    daysAhead: number;
+  }> {
     const page = await this.findEnabledPage(slug);
     const settings = await this.settings.adminGetSettings(page.user_id);
     const tz: string = settings.timezone || 'Asia/Ho_Chi_Minh';
@@ -133,7 +144,14 @@ export class BookingService {
         if (!overlap) slots.push(new Date(start).toISOString());
       }
     }
-    return { durationMinutes: duration, slots };
+    return {
+      durationMinutes: duration,
+      slots,
+      workingDays,
+      workingStart: String(settings.working_start ?? '08:00').slice(0, 5),
+      workingEnd: String(settings.working_end ?? '17:00').slice(0, 5),
+      daysAhead: DAYS_AHEAD,
+    };
   }
 
   async createBooking(slug: string, dto: CreateBookingDto) {
