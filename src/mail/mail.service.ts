@@ -246,6 +246,41 @@ export class MailService {
     this.logger.log(`Đã gửi email mời tới ${params.to} — sự kiện "${params.eventTitle}"`);
   }
 
+  /** Email báo được người khác CHIA SẺ LỊCH cho mình. */
+  async sendCalendarShared(params: { to: string; ownerEmail: string; role: 'viewer' | 'editor' }): Promise<void> {
+    const roleLabel = params.role === 'editor' ? 'chỉnh sửa' : 'chỉ xem';
+    const appUrl = (process.env.CORS_ORIGIN || '').split(',')[0].trim();
+    const openBtn = appUrl
+      ? `<table role="presentation" cellpadding="0" cellspacing="0" style="width:100%;margin-top:8px">
+           <tr><td><a href="${appUrl}" style="display:block;text-align:center;padding:12px 0;border-radius:8px;background:#1d4ed8;color:#ffffff;text-decoration:none;font-weight:600;font-size:15px">Mở lịch</a></td></tr>
+         </table>`
+      : '';
+    await this.deliver({
+      to: params.to,
+      subject: `${params.ownerEmail} đã chia sẻ lịch với bạn`,
+      text: `${params.ownerEmail} vừa chia sẻ lịch của họ với bạn (quyền: ${roleLabel}). Đăng nhập để xem.${appUrl ? `\n${appUrl}` : ''}`,
+      html: `
+      <div style="background:#f3f4f6;padding:24px 0;font-family:'Segoe UI',Roboto,Helvetica,Arial,sans-serif">
+        <div style="max-width:480px;margin:0 auto">
+          <div style="background:#0f766e;border-radius:12px 12px 0 0;padding:16px 28px">
+            <span style="color:#ffffff;font-size:16px;font-weight:600;letter-spacing:.2px">👥 Chia sẻ lịch</span>
+          </div>
+          <div style="background:#ffffff;border:1px solid #e5e7eb;border-top:none;border-radius:0 0 12px 12px;padding:28px">
+            <p style="margin:0 0 6px;color:#6b7280;font-size:13px">Bạn được chia sẻ một lịch</p>
+            <h1 style="margin:0 0 18px;font-size:20px;line-height:1.35;color:#111827">${params.ownerEmail}</h1>
+            <table role="presentation" cellpadding="0" cellspacing="0" style="width:100%;background:#f9fafb;border-radius:10px;padding:6px 16px;margin-bottom:6px">
+              <tr><td style="padding:6px 0;color:#374151;font-size:14px">🔑&nbsp;&nbsp;Quyền: <strong>${roleLabel}</strong></td></tr>
+            </table>
+            ${openBtn}
+            <p style="margin:20px 0 0;color:#9ca3af;font-size:12px;line-height:1.5">Đăng nhập bằng chính email này để xem lịch được chia sẻ.</p>
+          </div>
+        </div>
+      </div>
+      `,
+    });
+    this.logger.log(`Đã gửi email chia sẻ lịch tới ${params.to} (chủ: ${params.ownerEmail})`);
+  }
+
   /** Email báo sự kiện được CẬP NHẬT (đổi giờ/tiêu đề/địa điểm) tới khách mời. */
   async sendEventUpdated(params: ReminderEmailParams): Promise<void> {
     const timeLabel = this.formatTime(params.startTime);

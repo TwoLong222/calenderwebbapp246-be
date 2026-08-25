@@ -9,13 +9,15 @@ import { ConfigService } from '@nestjs/config';
 import { SettingsService } from '../settings/settings.service';
 
 export interface AiParseResult {
-  intent: 'create_event' | 'plan_schedule' | 'search_events' | 'reschedule_event' | 'delete_event' | 'unclear';
+  intent: 'create_event' | 'plan_schedule' | 'search_events' | 'reschedule_event' | 'delete_event' | 'invite_guest' | 'unclear';
   // create_event
   title?: string;
   startTime?: string; // ISO 8601
   endTime?: string; // ISO 8601
-  // search / reschedule / delete: từ khóa tên sự kiện cần thao tác
+  // search / reschedule / delete / invite: từ khóa tên sự kiện cần thao tác
   query?: string;
+  // invite_guest: danh sách email khách cần thêm vào sự kiện
+  guestEmails?: string[];
   // search: khoảng thời gian (vd "tuần này")
   rangeStart?: string;
   rangeEnd?: string;
@@ -76,6 +78,9 @@ export class AiService {
         return ai?.allow_update === false ? denied(labels.update) : result;
       case 'delete_event':
         return ai?.allow_delete === false ? denied(labels.delete) : result;
+      case 'invite_guest':
+        // Thêm khách = sửa sự kiện -> theo quyền cập nhật.
+        return ai?.allow_update === false ? denied(labels.update) : result;
       case 'search_events':
       case 'plan_schedule':
         return ai?.allow_search === false ? denied(labels.search) : result;
@@ -124,7 +129,7 @@ export class AiService {
     const systemPrompt = `Bạn là trợ lý lịch tiếng Việt. Bây giờ là ${now.toISOString()} (giờ Việt Nam UTC+7).
 Người dùng nói 1 câu để thao tác lịch. Xác định Ý ĐỊNH và trả về DUY NHẤT một JSON đúng schema, KHÔNG thêm chữ nào khác, KHÔNG markdown:
 {
-  "intent": "create_event" | "plan_schedule" | "search_events" | "reschedule_event" | "delete_event" | "unclear",
+  "intent": "create_event" | "plan_schedule" | "search_events" | "reschedule_event" | "delete_event" | "invite_guest" | "unclear",
   "count": "plan_schedule only: number of sessions, default 1",
   "durationMinutes": "plan_schedule only: minutes per session, default 60",
   "planStart": "plan_schedule only: ISO start of planning window",
@@ -136,7 +141,8 @@ Người dùng nói 1 câu để thao tác lịch. Xác định Ý ĐỊNH và t
   "title": "chỉ dùng cho create_event: tiêu đề ngắn gọn",
   "startTime": "create_event: ISO 8601 giờ bắt đầu",
   "endTime": "create_event: ISO 8601 giờ kết thúc, mặc định +1 tiếng nếu không rõ",
-  "query": "search/reschedule/delete: từ khóa TÊN sự kiện cần tìm/dời/xóa (vd 'họp nhóm')",
+  "query": "search/reschedule/delete/invite: từ khóa TÊN sự kiện cần tìm/dời/xóa/thêm khách (vd 'họp nhóm')",
+  "guestEmails": "invite_guest only: mảng email khách cần thêm vào sự kiện (vd ['an@gmail.com'])",
   "rangeStart": "search: ISO 8601 đầu khoảng thời gian nếu có (vd 'tuần này')",
   "rangeEnd": "search: ISO 8601 cuối khoảng",
   "newStartTime": "reschedule: ISO 8601 giờ bắt đầu MỚI",
@@ -149,12 +155,16 @@ Ví dụ ý định:
 - "tìm sự kiện tập gym" -> search_events (query="tập gym")
 - "dời họp nhóm sang 4h chiều" -> reschedule_event (query="họp nhóm", newStartTime=...)
 - "xóa họp nhóm ngày mai" -> delete_event (query="họp nhóm")
+- "mời an@gmail.com vào họp nhóm" -> invite_guest (query="họp nhóm", guestEmails=["an@gmail.com"])
+- "thêm an@gmail.com và binh@gmail.com vào sự kiện đi chơi" -> invite_guest (query="đi chơi", guestEmails=["an@gmail.com","binh@gmail.com"])
 Quy tắc QUAN TRỌNG:
 - "mai"=ngày hôm sau, "thứ 4 tuần sau"... -> suy ra được NGÀY là ok.
 - Nhưng GIỜ thì KHÔNG được tự chế. Nếu người dùng KHÔNG nói giờ cụ thể (vd "mai đi học" — thiếu giờ),
   BẮT BUỘC trả "intent":"unclear" và "reply" hỏi lại giờ (vd "Mấy giờ vậy bạn?"). TUYỆT ĐỐI không mặc định 8:00 hay giờ bất kỳ.
 - Thời LƯỢNG thì được mặc định 1 tiếng nếu người dùng không nói.
 - reschedule: nếu không có giờ mới -> "unclear" hỏi "Dời sang lúc nào?".
+- invite_guest: dùng khi người dùng muốn MỜI/THÊM người (theo email) vào 1 sự kiện đã có.
+  Nếu thiếu email hợp lệ -> "unclear" hỏi email. Nếu thiếu tên sự kiện -> "unclear" hỏi sự kiện nào.
 - Chỉ điền field liên quan tới intent. Không rõ ý -> "unclear" + hỏi lại.
 - CHÀO HỎI / NÓI CHUYỆN PHIẾM (vd "hi", "ok", "cảm ơn", "im", "ko cần"): intent="unclear",
   trả lời NGẮN GỌN, THÂN THIỆN, TỰ NHIÊN (đừng lặp y hệt mỗi lần) và LỒNG 1 ví dụ lệnh cụ thể
