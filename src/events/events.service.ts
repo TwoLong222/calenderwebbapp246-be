@@ -56,7 +56,7 @@ export class EventsService {
   async listEvents(supabase: SupabaseClient, userEmail?: string, userId?: string) {
     const { data, error } = await supabase
       .from('events')
-      .select('*, attendees:event_attendees(*)')
+      .select('*, attendees:event_attendees(*), reminders:event_reminders(minutes_before)')
       .is('deleted_at', null) // bỏ qua sự kiện đang trong thùng rác
       .order('start_time', { ascending: true });
 
@@ -136,7 +136,7 @@ export class EventsService {
     const admin = this.supabaseService.adminClient;
     const { data, error } = await admin
       .from('event_attendees')
-      .select('event:events(*, attendees:event_attendees(*))')
+      .select('event:events(*, attendees:event_attendees(*), reminders:event_reminders(minutes_before))')
       .ilike('email', userEmail) // khớp không phân biệt hoa/thường
       .eq('status', 'accepted'); // chỉ lấy sự kiện đã được khách Đồng ý
 
@@ -187,6 +187,17 @@ export class EventsService {
     return data ?? [];
   }
 
+  /** Chuẩn hoá danh sách mốc nhắc (phút): khử trùng, chặn [0, 200 tuần], sắp tăng dần. */
+  private normalizeReminders(list?: number[]): number[] {
+    if (!list?.length) return [];
+    const set = new Set<number>();
+    for (const v of list) {
+      const n = Math.round(Number(v));
+      if (Number.isFinite(n) && n >= 0 && n <= 2016000) set.add(n);
+    }
+    return [...set].sort((a, b) => a - b);
+  }
+
   /** Dời 1 mốc thời gian ISO theo chu kỳ lặp cho lần thứ i (i=0 là lần gốc) */
   private shiftDate(iso: string, repeat: 'none' | 'daily' | 'weekly' | 'monthly', i: number): string {
     const d = new Date(iso);
@@ -223,6 +234,7 @@ export class EventsService {
       kind: dto.kind ?? 'event',
       color: dto.color ?? 'sky',
       reminder_minutes: dto.reminderMinutes ?? null,
+      reminder_message: dto.reminderMessage?.trim() || null,
       series_id: seriesId,
       creator_id: userId,
       creator_email: userEmail || null,
@@ -230,6 +242,16 @@ export class EventsService {
 
     const { data: events, error } = await supabase.from('events').insert(rows).select();
     if (error) throw error;
+
+    // Nhắc lịch linh hoạt: mỗi lần lặp nhận CÙNG bộ mốc nhắc (event_reminders).
+    const reminderMins = this.normalizeReminders(dto.reminders);
+    if (reminderMins.length) {
+      const reminderRows = events.flatMap((ev: any) =>
+        reminderMins.map((m) => ({ event_id: ev.id, minutes_before: m })),
+      );
+      const { error: remErr } = await supabase.from('event_reminders').insert(reminderRows);
+      if (remErr) this.logger.warn(`Không lưu được mốc nhắc: ${remErr.message}`);
+    }
 
     // Lần sớm nhất (event gốc) — trả về cho frontend + là nơi gửi email mời (tránh spam N lần)
     const first = [...events].sort(
@@ -252,7 +274,8 @@ export class EventsService {
     }
 
     const attendees = await this.getAttendees(supabase, first.id);
-    return { event: { ...first, attendees }, conflicts };
+    const reminders = reminderMins.map((m) => ({ minutes_before: m }));
+    return { event: { ...first, attendees, reminders }, conflicts };
   }
 
   async updateEvent(supabase: SupabaseClient, id: string, dto: UpdateEventDto, userId?: string) {
@@ -291,11 +314,49 @@ export class EventsService {
     if (dto.kind !== undefined) patch['kind'] = dto.kind;
     if (dto.color !== undefined) patch['color'] = dto.color;
     if (dto.reminderMinutes !== undefined) patch['reminder_minutes'] = dto.reminderMinutes;
+    if (dto.reminderMessage !== undefined) patch['reminder_message'] = dto.reminderMessage?.trim() || null;
 
-    const { data: event, error } = await supabase.from('events').update(patch).eq('id', id).select().maybeSingle();
-    if (error) throw error;
-    // 0 dòng = RLS chặn (không phải chủ event) hoặc event không tồn tại
-    if (!event) throw new ForbiddenException('Bạn không có quyền sửa sự kiện này.');
+    // Nếu KHÔNG có cột events nào đổi (vd chỉ đổi reminders/message qua bảng riêng) thì
+    // không gọi update rỗng (Postgres trả 0 dòng -> bị hiểu nhầm là hết quyền) — chỉ đọc lại row.
+    let event: any;
+    if (Object.keys(patch).length > 0) {
+      const { data, error } = await supabase.from('events').update(patch).eq('id', id).select().maybeSingle();
+      if (error) throw error;
+      if (!data) throw new ForbiddenException('Bạn không có quyền sửa sự kiện này.');
+      event = data;
+    } else {
+      const { data, error } = await supabase.from('events').select().eq('id', id).maybeSingle();
+      if (error) throw error;
+      if (!data) throw new ForbiddenException('Bạn không có quyền sửa sự kiện này.');
+      event = data;
+    }
+
+    // Thay TOÀN BỘ bộ mốc nhắc nếu client gửi lên (xóa cũ -> chèn mới; sent cũ tự cascade theo FK).
+    if (dto.reminders !== undefined) {
+      await supabase.from('event_reminders').delete().eq('event_id', id);
+      const mins = this.normalizeReminders(dto.reminders);
+      if (mins.length) {
+        const { error: remErr } = await supabase
+          .from('event_reminders')
+          .insert(mins.map((m) => ({ event_id: id, minutes_before: m })));
+        if (remErr) this.logger.warn(`Không cập nhật được mốc nhắc: ${remErr.message}`);
+      }
+    }
+
+    // Dời GIỜ -> "arm" lại các mốc nhắc để gửi lại theo giờ mới (xóa dấu đã-gửi qua service_role).
+    if (dto.startTime !== undefined) {
+      const { data: rems } = await this.supabaseService.adminClient
+        .from('event_reminders')
+        .select('id')
+        .eq('event_id', id);
+      const ids = (rems ?? []).map((r: any) => r.id);
+      if (ids.length) {
+        await this.supabaseService.adminClient
+          .from('event_reminder_sent')
+          .delete()
+          .in('reminder_id', ids);
+      }
+    }
 
     // Dời giờ hoặc đổi nhắc -> "arm" lại reminder (cho phép gửi nhắc lần nữa theo giờ mới).
     if (dto.startTime !== undefined || dto.reminderMinutes !== undefined) {
@@ -336,7 +397,11 @@ export class EventsService {
     }
 
     const attendees = await this.getAttendees(supabase, id);
-    return { event: { ...event, attendees }, conflicts };
+    const { data: rems } = await supabase
+      .from('event_reminders')
+      .select('minutes_before')
+      .eq('event_id', id);
+    return { event: { ...event, attendees, reminders: rems ?? [] }, conflicts };
   }
 
   /** XÓA MỀM: đưa vào thùng rác (đặt deleted_at = now). Không mất dữ liệu, có thể khôi phục. */

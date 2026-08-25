@@ -66,9 +66,26 @@ export class CreateEventDto {
   @Max(52)
   repeatCount?: number;
 
-  /** Nhắc trước bao nhiêu phút (null/không gửi = không nhắc). */
+  /** (LEGACY) Nhắc trước bao nhiêu phút — giữ cho tương thích sự kiện cũ; FE mới dùng `reminders`. */
   @IsOptional()
   @IsInt()
   @IsIn([5, 10, 15, 30, 60, 1440])
   reminderMinutes?: number | null;
+
+  /**
+   * Danh sách các mốc nhắc (tính bằng PHÚT trước giờ bắt đầu). 0 = ngay lúc bắt đầu.
+   * Mảng rỗng / không gửi = không nhắc. Tối đa 2.016.000 phút (200 tuần).
+   */
+  @IsOptional()
+  @IsArray()
+  @IsInt({ each: true })
+  @Min(0, { each: true })
+  @Max(2016000, { each: true })
+  reminders?: number[];
+
+  /** Nội dung thông báo tùy chỉnh khi tới giờ nhắc; để trống = dùng tên sự kiện. */
+  @IsOptional()
+  @IsString()
+  @MaxLength(300)
+  reminderMessage?: string;
 }
