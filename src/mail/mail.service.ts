@@ -281,6 +281,34 @@ export class MailService {
     this.logger.log(`Đã gửi email chia sẻ lịch tới ${params.to} (chủ: ${params.ownerEmail})`);
   }
 
+  /** Email báo được CẤP quyền CHỈNH SỬA một sự kiện. */
+  async sendEventEditorGranted(params: { to: string; eventTitle: string; startTime: string }): Promise<void> {
+    const timeLabel = this.formatTime(params.startTime);
+    await this.deliver({
+      to: params.to,
+      subject: `Bạn được cấp quyền chỉnh sửa: ${params.eventTitle}`,
+      text: `Bạn vừa được cấp quyền CHỈNH SỬA sự kiện "${params.eventTitle}" (${timeLabel}). Bạn có thể sửa tiêu đề, địa điểm, mô tả của sự kiện.`,
+      html: `
+      <div style="background:#f3f4f6;padding:24px 0;font-family:'Segoe UI',Roboto,Helvetica,Arial,sans-serif">
+        <div style="max-width:480px;margin:0 auto">
+          <div style="background:#7c3aed;border-radius:12px 12px 0 0;padding:16px 28px">
+            <span style="color:#ffffff;font-size:16px;font-weight:600;letter-spacing:.2px">✏️ Quyền chỉnh sửa</span>
+          </div>
+          <div style="background:#ffffff;border:1px solid #e5e7eb;border-top:none;border-radius:0 0 12px 12px;padding:28px">
+            <p style="margin:0 0 6px;color:#6b7280;font-size:13px">Bạn được cấp quyền chỉnh sửa sự kiện</p>
+            <h1 style="margin:0 0 18px;font-size:20px;line-height:1.35;color:#111827">${params.eventTitle}</h1>
+            <table role="presentation" cellpadding="0" cellspacing="0" style="width:100%;background:#f9fafb;border-radius:10px;padding:6px 16px;margin-bottom:6px">
+              <tr><td style="padding:6px 0;color:#374151;font-size:14px">🕐&nbsp;&nbsp;${timeLabel}</td></tr>
+            </table>
+            <p style="margin:18px 0 0;color:#6b7280;font-size:13px;line-height:1.5">Bạn có thể sửa tiêu đề, địa điểm và mô tả của sự kiện này.</p>
+          </div>
+        </div>
+      </div>
+      `,
+    });
+    this.logger.log(`Đã gửi email cấp quyền chỉnh sửa tới ${params.to} — "${params.eventTitle}"`);
+  }
+
   /** Email báo sự kiện được CẬP NHẬT (đổi giờ/tiêu đề/địa điểm) tới khách mời. */
   async sendEventUpdated(params: ReminderEmailParams): Promise<void> {
     const timeLabel = this.formatTime(params.startTime);

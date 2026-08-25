@@ -254,7 +254,7 @@ export class EventsService {
     // Gán khách mời cho TẤT CẢ các lần lặp; chỉ gửi email mời cho lần đầu tiên
     if (dto.guestEmails?.length) {
       for (const ev of events) {
-        const added = await this.syncAttendees(supabase, ev.id, dto.guestEmails, dto.guestEditors ?? []);
+        const { added, grantedEditors } = await this.syncAttendees(supabase, ev.id, dto.guestEmails, dto.guestEditors ?? []);
         if (ev.id === first.id) {
           // Gửi email NGẦM (không await) -> phản hồi về frontend ngay, không phải chờ SMTP
           void this.sendInvites(ev.id, added, {
@@ -262,6 +262,7 @@ export class EventsService {
             startTime: ev.start_time,
             location: dto.location ?? null,
           });
+          this.sendEditorGrants(grantedEditors, dto.title, ev.start_time);
         }
       }
     }
@@ -352,13 +353,14 @@ export class EventsService {
     // sửa nội dung nhưng KHÔNG quản khách -> bỏ qua syncAttendees để không đụng RLS.
     const isCreator = !existing.creator_id || !userId || existing.creator_id === userId;
     if (dto.guestEmails !== undefined && isCreator) {
-      const added = await this.syncAttendees(supabase, id, dto.guestEmails, dto.guestEditors ?? []);
+      const { added, grantedEditors } = await this.syncAttendees(supabase, id, dto.guestEmails, dto.guestEditors ?? []);
       // Gửi email mời NGẦM cho khách MỚI thêm (không await -> phản hồi ngay, không chờ SMTP)
       void this.sendInvites(id, added, {
         title: event.title,
         startTime: event.start_time,
         location: event.location ?? null,
       });
+      this.sendEditorGrants(grantedEditors, event.title, event.start_time);
     }
 
     // Nếu sự kiện có đặt nhắc, đảm bảo người tạo vẫn trong danh sách nhắc (kể cả sau khi
@@ -397,6 +399,13 @@ export class EventsService {
     if (error) throw error;
     void this.notifyCancelled(attendees, ev);
     return { id };
+  }
+
+  /** Gửi email báo được CẤP quyền chỉnh sửa sự kiện (bắn rồi quên). */
+  private sendEditorGrants(emails: string[], title: string, startTime: string): void {
+    for (const email of emails) {
+      void this.mail.sendEventEditorGranted({ to: email, eventTitle: title, startTime });
+    }
   }
 
   /** Gửi email HUỶ cho từng khách mời có bật preference 'event_cancelled'. */
@@ -522,7 +531,7 @@ export class EventsService {
     eventId: string,
     emails: string[],
     editorEmails: string[] = [],
-  ): Promise<{ email: string; token: string }[]> {
+  ): Promise<{ added: { email: string; token: string }[]; grantedEditors: string[] }> {
     const { data: existing } = await supabase
       .from('event_attendees')
       .select('email, can_edit')
@@ -537,6 +546,8 @@ export class EventsService {
     }
 
     const added: { email: string; token: string }[] = [];
+    // Email vừa được CẤP quyền chỉnh sửa (từ chưa có -> có), để báo cho họ.
+    const grantedEditors: string[] = [];
     for (const email of emails) {
       const canEdit = editorSet.has(email.toLowerCase());
       const prev = existingMap.get(email.toLowerCase());
@@ -544,6 +555,7 @@ export class EventsService {
         // Đã là khách -> chỉ cập nhật quyền nếu đổi (bật/tắt chỉnh sửa).
         if ((prev as any).can_edit !== canEdit) {
           await supabase.from('event_attendees').update({ can_edit: canEdit }).eq('event_id', eventId).eq('email', email);
+          if (canEdit) grantedEditors.push(email); // vừa nâng lên editor
         }
         continue;
       }
@@ -559,8 +571,9 @@ export class EventsService {
       });
       if (error) throw error;
       added.push({ email, token });
+      if (canEdit) grantedEditors.push(email); // khách mới thêm thẳng làm editor
     }
-    return added;
+    return { added, grantedEditors };
   }
 
   /** Gửi email mời (kèm link Đồng ý/Từ chối) cho các khách mới thêm. Lỗi gửi mail không làm hỏng việc tạo event. */
