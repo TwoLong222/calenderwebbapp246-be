@@ -197,7 +197,7 @@ export class EventsService {
   /** Dời 1 mốc thời gian ISO theo chu kỳ lặp cho lần thứ i (i=0 là lần gốc) */
   private shiftDate(
     iso: string,
-    repeat: 'none' | 'daily' | 'weekly' | 'monthly',
+    repeat: 'none' | 'daily' | 'weekly' | 'monthly' | 'yearly',
     i: number,
     interval = 1,
   ): string {
@@ -206,6 +206,7 @@ export class EventsService {
     if (repeat === 'daily') d.setDate(d.getDate() + i * interval);
     else if (repeat === 'weekly') d.setDate(d.getDate() + i * 7 * interval);
     else if (repeat === 'monthly') d.setMonth(d.getMonth() + i * interval);
+    else if (repeat === 'yearly') d.setFullYear(d.getFullYear() + i * interval);
     return d.toISOString();
   }
 

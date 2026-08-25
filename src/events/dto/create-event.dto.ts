@@ -56,8 +56,8 @@ export class CreateEventDto {
 
   /** Kiểu lặp lại của sự kiện — 'none' hoặc không gửi = không lặp */
   @IsOptional()
-  @IsIn(['none', 'daily', 'weekly', 'monthly'])
-  repeat?: 'none' | 'daily' | 'weekly' | 'monthly';
+  @IsIn(['none', 'daily', 'weekly', 'monthly', 'yearly'])
+  repeat?: 'none' | 'daily' | 'weekly' | 'monthly' | 'yearly';
 
   /** Số lần lặp (tính cả lần đầu). Tối đa 52 để tránh tạo quá nhiều. */
   @IsOptional()
