@@ -191,6 +191,11 @@ export class SettingsService {
     return this.isEmailEnabled(uid, key);
   }
 
+  /** Công khai: tra user_id theo email (dùng cho cron tạo thông báo trong-app). */
+  async resolveUserIdByEmail(email: string): Promise<string | null> {
+    return this.getUserIdByEmail(email);
+  }
+
   private emailToId: { map: Map<string, string>; at: number } | null = null;
 
   private async getUserIdByEmail(email: string): Promise<string | null> {

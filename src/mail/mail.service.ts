@@ -23,6 +23,8 @@ interface ReminderEmailParams {
   /** ISO string */
   startTime: string;
   location: string | null;
+  /** Nội dung nhắc tùy chỉnh do người dùng nhập (nếu có) — hiện nổi bật trong email. */
+  message?: string | null;
 }
 
 interface InviteEmailParams {
@@ -152,12 +154,16 @@ export class MailService {
     // Sự kiện không đặt tên -> hiện "(không tiêu đề)" cho khớp thông báo trong app.
     const title = params.eventTitle?.trim() || '(không tiêu đề)';
     const locationLine = params.location ? ` tại <strong>${params.location}</strong>` : '';
+    const note = params.message?.trim();
+    // Nếu người dùng nhập nội dung tùy chỉnh -> hiện dòng đó nổi bật ở đầu email.
+    const noteLine = note ? `<p style="font-size:16px;color:#111827;margin:0 0 8px">📌 ${note}</p>` : '';
+    const noteText = note ? `${note}\n` : '';
 
     await this.deliver({
       to: params.to,
-      subject: `Nhắc lịch: ${title}`,
-      text: `Sự kiện "${title}" sẽ bắt đầu vào ${timeLabel}${params.location ? ` tại ${params.location}` : ''}.`,
-      html: `<p>Sự kiện <strong>${title}</strong> sẽ bắt đầu vào <strong>${timeLabel}</strong>${locationLine}.</p>`,
+      subject: `Nhắc lịch: ${note || title}`,
+      text: `${noteText}Sự kiện "${title}" sẽ bắt đầu vào ${timeLabel}${params.location ? ` tại ${params.location}` : ''}.`,
+      html: `${noteLine}<p>Sự kiện <strong>${title}</strong> sẽ bắt đầu vào <strong>${timeLabel}</strong>${locationLine}.</p>`,
     });
 
     this.logger.log(`Đã gửi email nhắc lịch tới ${params.to} — sự kiện "${title}"`);

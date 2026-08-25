@@ -33,6 +33,20 @@ interface InviteContext {
   location: string | null;
 }
 
+/** Luật lặp đã chuẩn hoá dùng để sinh các lần lặp. */
+interface RecurrenceRule {
+  freq: 'daily' | 'weekly' | 'monthly' | 'yearly';
+  interval: number;
+  /** Lặp theo tuần: các thứ được chọn (0=CN..6=T7). Rỗng = dùng thứ của ngày bắt đầu. */
+  weekdays: number[];
+  /** Lặp theo tháng: theo ngày / theo thứ thứ-n / theo thứ cuối cùng. */
+  monthlyMode: 'monthday' | 'nthWeekday' | 'lastWeekday';
+  /** Kết thúc sau N lần (tính cả lần đầu). */
+  count?: number;
+  /** Kết thúc vào ngày (ISO). null = không giới hạn (bị chặn cứng ~2 năm). */
+  until: string | null;
+}
+
 @Injectable()
 export class EventsService {
   private readonly logger = new Logger(EventsService.name);
@@ -63,7 +77,7 @@ export class EventsService {
   async listEvents(supabase: SupabaseClient, userEmail?: string, userId?: string) {
     const { data, error } = await supabase
       .from('events')
-      .select('*, attendees:event_attendees(*)')
+      .select('*, attendees:event_attendees(*), reminders:event_reminders(minutes_before)')
       .is('deleted_at', null) // bỏ qua sự kiện đang trong thùng rác
       .order('start_time', { ascending: true });
 
@@ -143,7 +157,7 @@ export class EventsService {
     const admin = this.supabaseService.adminClient;
     const { data, error } = await admin
       .from('event_attendees')
-      .select('event:events(*, attendees:event_attendees(*))')
+      .select('event:events(*, attendees:event_attendees(*), reminders:event_reminders(minutes_before))')
       .ilike('email', userEmail) // khớp không phân biệt hoa/thường
       .eq('status', 'accepted'); // chỉ lấy sự kiện đã được khách Đồng ý
 
@@ -194,50 +208,154 @@ export class EventsService {
     return data ?? [];
   }
 
-  /** Dời 1 mốc thời gian ISO theo chu kỳ lặp cho lần thứ i (i=0 là lần gốc) */
-  private shiftDate(
-    iso: string,
-    repeat: 'none' | 'daily' | 'weekly' | 'monthly' | 'yearly',
-    i: number,
-    interval = 1,
-  ): string {
-    const d = new Date(iso);
-    if (i === 0 || repeat === 'none') return d.toISOString();
-    if (repeat === 'daily') d.setDate(d.getDate() + i * interval);
-    else if (repeat === 'weekly') d.setDate(d.getDate() + i * 7 * interval);
-    else if (repeat === 'monthly') d.setMonth(d.getMonth() + i * interval);
-    else if (repeat === 'yearly') d.setFullYear(d.getFullYear() + i * interval);
-    return d.toISOString();
+  /** Chuẩn hoá danh sách mốc nhắc (phút): khử trùng, chặn [0, 200 tuần], sắp tăng dần. */
+  private normalizeReminders(list?: number[]): number[] {
+    if (!list?.length) return [];
+    const set = new Set<number>();
+    for (const v of list) {
+      const n = Math.round(Number(v));
+      if (Number.isFinite(n) && n >= 0 && n <= 2016000) set.add(n);
+    }
+    return [...set].sort((a, b) => a - b);
+  }
+
+  /** Gom các trường lặp trong DTO thành 1 "luật lặp" chuẩn; null = không lặp. */
+  private buildRule(dto: CreateEventDto): RecurrenceRule | null {
+    // Ưu tiên repeatFreq (mới); nếu chỉ có repeat cũ thì quy đổi.
+    const freq =
+      dto.repeatFreq ??
+      (dto.repeat && dto.repeat !== 'none' ? (dto.repeat as RecurrenceRule['freq']) : undefined);
+    if (!freq) return null;
+    return {
+      freq,
+      interval: Math.min(Math.max(dto.repeatInterval ?? 1, 1), 999),
+      weekdays: (dto.repeatWeekdays ?? []).filter((d) => d >= 0 && d <= 6),
+      monthlyMode: dto.repeatMonthlyMode ?? 'monthday',
+      count: dto.repeatCount,
+      until: dto.repeatUntil ?? null,
+    };
+  }
+
+  /**
+   * Sinh danh sách các lần lặp (mỗi lần = {start,end} ISO). Chặn cứng để tránh tạo vô hạn:
+   * tối đa MAX lần và trong vòng ~2 năm (cho lựa chọn "Không bao giờ").
+   */
+  private generateOccurrences(startIso: string, endIso: string, rule: RecurrenceRule): { start: string; end: string }[] {
+    const MAX = 366;
+    const start = new Date(startIso);
+    const durationMs = new Date(endIso).getTime() - start.getTime();
+    const interval = Math.max(1, rule.interval || 1);
+    const until = rule.until ? new Date(rule.until) : null;
+    const cap = rule.count ? Math.min(Math.max(rule.count, 1), MAX) : MAX;
+    const horizon = new Date(start);
+    horizon.setFullYear(horizon.getFullYear() + 2);
+
+    const out: Date[] = [];
+    const stop = (d: Date) => (until && d > until) || d > horizon || out.length >= cap;
+
+    if (rule.freq === 'daily') {
+      const d = new Date(start);
+      while (!stop(d)) {
+        out.push(new Date(d));
+        d.setDate(d.getDate() + interval);
+      }
+    } else if (rule.freq === 'weekly') {
+      const weekdays = rule.weekdays.length ? [...new Set(rule.weekdays)].sort((a, b) => a - b) : [start.getDay()];
+      // Bắt đầu từ Chủ Nhật của tuần chứa `start`, giữ nguyên giờ:phút.
+      const weekStart = new Date(start);
+      weekStart.setDate(start.getDate() - start.getDay());
+      let safety = 0;
+      outer: while (out.length < cap && safety++ < 500) {
+        for (const wd of weekdays) {
+          const d = new Date(weekStart);
+          d.setDate(weekStart.getDate() + wd);
+          d.setHours(start.getHours(), start.getMinutes(), 0, 0);
+          if (d < start) continue;
+          if ((until && d > until) || d > horizon) break outer;
+          out.push(new Date(d));
+          if (out.length >= cap) break outer;
+        }
+        weekStart.setDate(weekStart.getDate() + 7 * interval);
+      }
+    } else if (rule.freq === 'monthly') {
+      const dayOfMonth = start.getDate();
+      const weekday = start.getDay();
+      const nth = Math.ceil(dayOfMonth / 7); // 1..5
+      const m = new Date(start.getFullYear(), start.getMonth(), 1);
+      let safety = 0;
+      while (out.length < cap && safety++ < 500) {
+        let d: Date | null = null;
+        if (rule.monthlyMode === 'nthWeekday') d = this.nthWeekday(m.getFullYear(), m.getMonth(), weekday, nth, start);
+        else if (rule.monthlyMode === 'lastWeekday') d = this.nthWeekday(m.getFullYear(), m.getMonth(), weekday, -1, start);
+        else {
+          const daysInMonth = new Date(m.getFullYear(), m.getMonth() + 1, 0).getDate();
+          if (dayOfMonth <= daysInMonth) d = new Date(m.getFullYear(), m.getMonth(), dayOfMonth, start.getHours(), start.getMinutes());
+        }
+        if (d && d >= start) {
+          if ((until && d > until) || d > horizon) break;
+          out.push(new Date(d));
+        }
+        m.setMonth(m.getMonth() + interval);
+        if (m > horizon) break;
+      }
+    } else if (rule.freq === 'yearly') {
+      const d = new Date(start);
+      while (!stop(d)) {
+        out.push(new Date(d));
+        d.setFullYear(d.getFullYear() + interval);
+      }
+    }
+
+    if (out.length === 0) out.push(new Date(start)); // luôn có ít nhất lần gốc
+    return out.slice(0, cap).map((d) => ({
+      start: d.toISOString(),
+      end: new Date(d.getTime() + durationMs).toISOString(),
+    }));
+  }
+
+  /** Thứ `weekday` lần thứ `nth` trong tháng (nth=-1 = lần cuối cùng); null nếu tháng không có. */
+  private nthWeekday(year: number, month: number, weekday: number, nth: number, base: Date): Date | null {
+    if (nth === -1) {
+      const last = new Date(year, month + 1, 0); // ngày cuối tháng
+      const diff = (last.getDay() - weekday + 7) % 7;
+      return new Date(year, month, last.getDate() - diff, base.getHours(), base.getMinutes());
+    }
+    const first = new Date(year, month, 1);
+    const offset = (weekday - first.getDay() + 7) % 7;
+    const day = 1 + offset + (nth - 1) * 7;
+    const daysInMonth = new Date(year, month + 1, 0).getDate();
+    if (day > daysInMonth) return null; // vd tháng không có "thứ Tư lần 5"
+    return new Date(year, month, day, base.getHours(), base.getMinutes());
   }
 
   async createEvent(supabase: SupabaseClient, userId: string, userEmail: string, dto: CreateEventDto) {
     const calendarId = await this.getPrimaryCalendarId(supabase, userId);
-    const repeat = dto.repeat ?? 'none';
-    // Số lần lặp: 'none' -> 1, còn lại lấy repeatCount (chặn trong [1, 52])
-    const count = repeat === 'none' ? 1 : Math.min(Math.max(dto.repeatCount ?? 1, 1), 52);
-    const interval = Math.min(Math.max(dto.repeatInterval ?? 1, 1), 30);
+    const rule = this.buildRule(dto);
 
     // Cảnh báo trùng lịch tính cho lần ĐẦU, TRƯỚC khi insert (để không tự trùng chính event vừa tạo)
     const conflicts = dto.isAllDay
       ? []
       : await this.findConflicts(supabase, calendarId, dto.startTime, dto.endTime);
 
+    // Sinh danh sách các lần lặp (mỗi lần = 1 event thật). Không lặp -> chỉ 1 lần gốc.
+    const occurrences = rule
+      ? this.generateOccurrences(dto.startTime, dto.endTime, rule)
+      : [{ start: dto.startTime, end: dto.endTime }];
     // Các lần lặp cùng 1 chuỗi có chung series_id (để sau này xóa cả chuỗi); không lặp -> null
-    const seriesId = count > 1 ? randomUUID() : null;
+    const seriesId = occurrences.length > 1 ? randomUUID() : null;
 
-    // Sinh danh sách các lần lặp — mỗi lần là 1 event thật, dời start/end theo chu kỳ
-    const rows = Array.from({ length: count }, (_, i) => ({
+    const rows = occurrences.map((o) => ({
       calendar_id: calendarId,
       title: dto.title,
       description: dto.description ?? null,
       location: dto.location ?? null,
-      start_time: this.shiftDate(dto.startTime, repeat, i, interval),
-      end_time: this.shiftDate(dto.endTime, repeat, i, interval),
+      start_time: o.start,
+      end_time: o.end,
       is_all_day: dto.isAllDay ?? false,
       kind: dto.kind ?? 'event',
       color: dto.color ?? 'sky',
-      // Chỉ set khi là số -> tránh lỗi nếu DB chưa chạy migration reminder_minutes.
-      ...(typeof dto.reminderMinutes === 'number' ? { reminder_minutes: dto.reminderMinutes } : {}),
+      reminder_minutes: dto.reminderMinutes ?? null,
+      reminder_message: dto.reminderMessage?.trim() || null,
       series_id: seriesId,
       creator_id: userId,
       creator_email: userEmail || null,
@@ -245,6 +363,16 @@ export class EventsService {
 
     const { data: events, error } = await supabase.from('events').insert(rows).select();
     if (error) throw error;
+
+    // Nhắc lịch linh hoạt: mỗi lần lặp nhận CÙNG bộ mốc nhắc (event_reminders).
+    const reminderMins = this.normalizeReminders(dto.reminders);
+    if (reminderMins.length) {
+      const reminderRows = events.flatMap((ev: any) =>
+        reminderMins.map((m) => ({ event_id: ev.id, minutes_before: m })),
+      );
+      const { error: remErr } = await supabase.from('event_reminders').insert(reminderRows);
+      if (remErr) this.logger.warn(`Không lưu được mốc nhắc: ${remErr.message}`);
+    }
 
     // Lần sớm nhất (event gốc) — trả về cho frontend + là nơi gửi email mời (tránh spam N lần)
     const first = [...events].sort(
@@ -275,7 +403,8 @@ export class EventsService {
     }
 
     const attendees = await this.getAttendees(supabase, first.id);
-    return { event: { ...first, attendees }, conflicts };
+    const reminders = reminderMins.map((m) => ({ minutes_before: m }));
+    return { event: { ...first, attendees, reminders }, conflicts };
   }
 
   async updateEvent(supabase: SupabaseClient, id: string, dto: UpdateEventDto, userId?: string) {
@@ -313,13 +442,51 @@ export class EventsService {
     if (dto.isAllDay !== undefined) patch['is_all_day'] = dto.isAllDay;
     if (dto.kind !== undefined) patch['kind'] = dto.kind;
     if (dto.color !== undefined) patch['color'] = dto.color;
-    if (typeof dto.reminderMinutes === 'number') patch['reminder_minutes'] = dto.reminderMinutes;
+    if (dto.reminderMinutes !== undefined) patch['reminder_minutes'] = dto.reminderMinutes;
+    if (dto.reminderMessage !== undefined) patch['reminder_message'] = dto.reminderMessage?.trim() || null;
     if (typeof dto.completed === 'boolean') patch['completed'] = dto.completed;
 
-    const { data: event, error } = await supabase.from('events').update(patch).eq('id', id).select().maybeSingle();
-    if (error) throw error;
-    // 0 dòng = RLS chặn (không phải chủ event) hoặc event không tồn tại
-    if (!event) throw new ForbiddenException('Bạn không có quyền sửa sự kiện này.');
+    // Nếu KHÔNG có cột events nào đổi (vd chỉ đổi reminders/message qua bảng riêng) thì
+    // không gọi update rỗng (Postgres trả 0 dòng -> bị hiểu nhầm là hết quyền) — chỉ đọc lại row.
+    let event: any;
+    if (Object.keys(patch).length > 0) {
+      const { data, error } = await supabase.from('events').update(patch).eq('id', id).select().maybeSingle();
+      if (error) throw error;
+      if (!data) throw new ForbiddenException('Bạn không có quyền sửa sự kiện này.');
+      event = data;
+    } else {
+      const { data, error } = await supabase.from('events').select().eq('id', id).maybeSingle();
+      if (error) throw error;
+      if (!data) throw new ForbiddenException('Bạn không có quyền sửa sự kiện này.');
+      event = data;
+    }
+
+    // Thay TOÀN BỘ bộ mốc nhắc nếu client gửi lên (xóa cũ -> chèn mới; sent cũ tự cascade theo FK).
+    if (dto.reminders !== undefined) {
+      await supabase.from('event_reminders').delete().eq('event_id', id);
+      const mins = this.normalizeReminders(dto.reminders);
+      if (mins.length) {
+        const { error: remErr } = await supabase
+          .from('event_reminders')
+          .insert(mins.map((m) => ({ event_id: id, minutes_before: m })));
+        if (remErr) this.logger.warn(`Không cập nhật được mốc nhắc: ${remErr.message}`);
+      }
+    }
+
+    // Dời GIỜ -> "arm" lại các mốc nhắc để gửi lại theo giờ mới (xóa dấu đã-gửi qua service_role).
+    if (dto.startTime !== undefined) {
+      const { data: rems } = await this.supabaseService.adminClient
+        .from('event_reminders')
+        .select('id')
+        .eq('event_id', id);
+      const ids = (rems ?? []).map((r: any) => r.id);
+      if (ids.length) {
+        await this.supabaseService.adminClient
+          .from('event_reminder_sent')
+          .delete()
+          .in('reminder_id', ids);
+      }
+    }
 
     // Dời giờ hoặc đổi nhắc -> "arm" lại reminder (cho phép gửi nhắc lần nữa theo giờ mới).
     if (dto.startTime !== undefined || dto.reminderMinutes !== undefined) {
@@ -370,7 +537,11 @@ export class EventsService {
     }
 
     const attendees = await this.getAttendees(supabase, id);
-    return { event: { ...event, attendees }, conflicts };
+    const { data: rems } = await supabase
+      .from('event_reminders')
+      .select('minutes_before')
+      .eq('event_id', id);
+    return { event: { ...event, attendees, reminders: rems ?? [] }, conflicts };
   }
 
   /** XÓA MỀM: đưa vào thùng rác (đặt deleted_at = now). Không mất dữ liệu, có thể khôi phục. */

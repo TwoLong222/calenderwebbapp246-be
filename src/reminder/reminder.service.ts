@@ -9,6 +9,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { SupabaseService } from '../supabase/supabase.service';
 import { MailService } from '../mail/mail.service';
+import { SettingsService } from '../settings/settings.service';
 
 interface DueReminderRow {
   attendee_id: string;
@@ -19,7 +20,19 @@ interface DueReminderRow {
   location: string | null;
 }
 
-/** Sự kiện cần gửi email nhắc cho CHÍNH CHỦ (get_due_owner_reminders). */
+/** 1 mốc nhắc (event_reminders) đã tới giờ — từ RPC get_due_reminders(). */
+interface DueReminderV2Row {
+  reminder_id: string;
+  event_id: string;
+  event_title: string;
+  reminder_message: string | null;
+  start_time: string;
+  location: string | null;
+  creator_id: string | null;
+  creator_email: string | null;
+}
+
+/** Sự kiện cần gửi email nhắc cho CHÍNH CHỦ (get_due_owner_reminders, phase11). */
 interface OwnerReminderRow {
   event_id: string;
   owner_id: string;
@@ -35,7 +48,94 @@ export class ReminderService {
   constructor(
     private readonly supabaseService: SupabaseService,
     private readonly mailService: MailService,
+    private readonly settings: SettingsService,
   ) {}
+
+  /**
+   * NHẮC LỊCH LINH HOẠT (Phase 8): mỗi PHÚT quét các mốc nhắc (event_reminders) tới giờ,
+   * gửi SONG SONG (1) thông báo trong-app (bảng notifications -> chuông + toast realtime)
+   * và (2) email. Người nhận = người tạo + khách đã Đồng ý. Mỗi (mốc nhắc, người nhận)
+   * chỉ gửi 1 lần nhờ bảng event_reminder_sent.
+   */
+  @Cron(CronExpression.EVERY_MINUTE)
+  async dispatchDueReminders(): Promise<void> {
+    const admin = this.supabaseService.adminClient;
+    const { data, error } = await admin.rpc('get_due_reminders');
+    if (error) {
+      this.logger.error('Không lấy được mốc nhắc tới hạn', error);
+      return;
+    }
+    const rows = (data ?? []) as DueReminderV2Row[];
+    if (rows.length === 0) return;
+
+    for (const row of rows) {
+      // Người nhận: người tạo + khách đã Đồng ý (map lower->email gốc để khử trùng).
+      const recipients = new Map<string, string>();
+      if (row.creator_email) recipients.set(row.creator_email.toLowerCase(), row.creator_email);
+      const { data: atts } = await admin
+        .from('event_attendees')
+        .select('email, status')
+        .eq('event_id', row.event_id);
+      for (const a of atts ?? []) {
+        if (a.status === 'accepted' && a.email) recipients.set(a.email.toLowerCase(), a.email);
+      }
+      if (recipients.size === 0) continue;
+
+      // Đã gửi cho ai (với mốc nhắc này) rồi thì bỏ qua.
+      const { data: sentRows } = await admin
+        .from('event_reminder_sent')
+        .select('email')
+        .eq('reminder_id', row.reminder_id);
+      const sent = new Set((sentRows ?? []).map((r: any) => (r.email as string).toLowerCase()));
+
+      for (const [lower, email] of recipients) {
+        if (sent.has(lower)) continue;
+
+        // Ghi dấu đã gửi TRƯỚC (khóa (reminder_id,email)) -> chống gửi trùng khi 2 lần quét chồng nhau.
+        const { error: markErr } = await admin
+          .from('event_reminder_sent')
+          .insert({ reminder_id: row.reminder_id, email });
+        if (markErr) continue; // trùng khóa -> đã gửi -> bỏ qua
+
+        // (1) Thông báo TRONG-APP nếu người nhận là user đã đăng ký.
+        const uid = await this.settings.resolveUserIdByEmail(email);
+        if (uid) {
+          const title = row.reminder_message?.trim() || row.event_title || 'Sự kiện';
+          await admin.from('notifications').insert({
+            user_id: uid,
+            type: 'reminder',
+            title,
+            body: this.startLabel(row.start_time),
+            event_id: row.event_id,
+          });
+        }
+
+        // (2) EMAIL (tôn trọng preference event_reminder).
+        try {
+          if (await this.settings.isEmailEnabledForEmail(email, 'event_reminder')) {
+            await this.mailService.sendEventReminder({
+              to: email,
+              eventTitle: row.event_title,
+              startTime: row.start_time,
+              location: row.location,
+              message: row.reminder_message,
+            });
+          }
+        } catch (err) {
+          this.logger.error(`Gửi email nhắc (linh hoạt) thất bại cho ${email}`, err as Error);
+        }
+      }
+    }
+  }
+
+  private startLabel(iso: string): string {
+    return `Bắt đầu lúc ${new Date(iso).toLocaleString('vi-VN', {
+      hour: '2-digit',
+      minute: '2-digit',
+      day: 'numeric',
+      month: 'numeric',
+    })}`;
+  }
 
   @Cron(CronExpression.EVERY_5_MINUTES)
   async sendDueReminders(): Promise<void> {

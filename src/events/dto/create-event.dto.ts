@@ -60,26 +60,49 @@ export class CreateEventDto {
   @IsEmail({}, { each: true })
   guestEditors?: string[];
 
-  /** Kiểu lặp lại của sự kiện — 'none' hoặc không gửi = không lặp */
+  /** (LEGACY) Kiểu lặp lại cũ — 'none' hoặc không gửi = không lặp. FE mới dùng repeatFreq. */
   @IsOptional()
   @IsIn(['none', 'daily', 'weekly', 'monthly', 'yearly'])
   repeat?: 'none' | 'daily' | 'weekly' | 'monthly' | 'yearly';
 
-  /** Số lần lặp (tính cả lần đầu). Tối đa 52 để tránh tạo quá nhiều. */
+  /** Tần suất lặp: ngày / tuần / tháng / năm. */
   @IsOptional()
-  @IsInt()
-  @Min(1)
-  @Max(52)
-  repeatCount?: number;
+  @IsIn(['daily', 'weekly', 'monthly', 'yearly'])
+  repeatFreq?: 'daily' | 'weekly' | 'monthly' | 'yearly';
 
-  /** Chu kỳ: lặp mỗi N đơn vị (mỗi 2 tuần, mỗi 3 ngày...). Mặc định 1. */
+  /** Lặp mỗi N đơn vị (mặc định 1). */
   @IsOptional()
   @IsInt()
   @Min(1)
-  @Max(30)
+  @Max(999)
   repeatInterval?: number;
 
-  /** Nhắc trước bao nhiêu phút (null/không gửi = không nhắc). */
+  /** (Lặp theo tuần) các thứ trong tuần được chọn — 0=CN ... 6=T7. */
+  @IsOptional()
+  @IsArray()
+  @IsInt({ each: true })
+  @Min(0, { each: true })
+  @Max(6, { each: true })
+  repeatWeekdays?: number[];
+
+  /** (Lặp theo tháng) theo NGÀY trong tháng, theo THỨ thứ-n, hoặc THỨ cuối cùng. */
+  @IsOptional()
+  @IsIn(['monthday', 'nthWeekday', 'lastWeekday'])
+  repeatMonthlyMode?: 'monthday' | 'nthWeekday' | 'lastWeekday';
+
+  /** Kết thúc "Sau N lần" — số lần lặp (tính cả lần đầu). Tối đa 366. */
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Max(366)
+  repeatCount?: number;
+
+  /** Kết thúc "Vào ngày" — mốc dừng (ISO). Không gửi = không giới hạn (bị chặn cứng ~2 năm). */
+  @IsOptional()
+  @IsISO8601()
+  repeatUntil?: string;
+
+  /** (LEGACY) Nhắc trước bao nhiêu phút — giữ cho tương thích sự kiện cũ; FE mới dùng `reminders`. */
   @IsOptional()
   @IsInt()
   @IsIn([5, 10, 15, 30, 60, 1440])
@@ -89,4 +112,21 @@ export class CreateEventDto {
   @IsOptional()
   @IsBoolean()
   completed?: boolean;
+
+  /**
+   * Danh sách các mốc nhắc (tính bằng PHÚT trước giờ bắt đầu). 0 = ngay lúc bắt đầu.
+   * Mảng rỗng / không gửi = không nhắc. Tối đa 2.016.000 phút (200 tuần).
+   */
+  @IsOptional()
+  @IsArray()
+  @IsInt({ each: true })
+  @Min(0, { each: true })
+  @Max(2016000, { each: true })
+  reminders?: number[];
+
+  /** Nội dung thông báo tùy chỉnh khi tới giờ nhắc; để trống = dùng tên sự kiện. */
+  @IsOptional()
+  @IsString()
+  @MaxLength(300)
+  reminderMessage?: string;
 }
