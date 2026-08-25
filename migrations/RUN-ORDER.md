@@ -18,6 +18,7 @@ Chạy trong **Supabase Dashboard › SQL Editor › New query**: mở file → 
 - **Chia sẻ giới hạn khoảng ngày (từ → đến)** → chạy phase6d **rồi** `2026-08-phase14-share-date-range.sql`
 - **Link .ics công khai báo lỗi** → chạy `2026-08-phase13-calendar-feed.sql`
 - **Khách mời được quyền chỉnh sửa sự kiện** → chạy `2026-08-phase15-attendee-editor.sql`
+- **Nhắc lịch linh hoạt (nhiều mốc + chuông realtime)** → chạy `2026-08-phase8-flexible-reminders.sql`
 
 Các file trên chỉ THÊM cái mới nên chạy sạch trên mọi DB.
 
