@@ -54,17 +54,47 @@ export class CreateEventDto {
   @IsEmail({}, { each: true })
   guestEmails?: string[];
 
-  /** Kiểu lặp lại của sự kiện — 'none' hoặc không gửi = không lặp */
+  /** (LEGACY) Kiểu lặp lại cũ — 'none' hoặc không gửi = không lặp. FE mới dùng repeatFreq. */
   @IsOptional()
   @IsIn(['none', 'daily', 'weekly', 'monthly'])
   repeat?: 'none' | 'daily' | 'weekly' | 'monthly';
 
-  /** Số lần lặp (tính cả lần đầu). Tối đa 52 để tránh tạo quá nhiều. */
+  /** Tần suất lặp: ngày / tuần / tháng / năm. */
+  @IsOptional()
+  @IsIn(['daily', 'weekly', 'monthly', 'yearly'])
+  repeatFreq?: 'daily' | 'weekly' | 'monthly' | 'yearly';
+
+  /** Lặp mỗi N đơn vị (mặc định 1). */
   @IsOptional()
   @IsInt()
   @Min(1)
-  @Max(52)
+  @Max(999)
+  repeatInterval?: number;
+
+  /** (Lặp theo tuần) các thứ trong tuần được chọn — 0=CN ... 6=T7. */
+  @IsOptional()
+  @IsArray()
+  @IsInt({ each: true })
+  @Min(0, { each: true })
+  @Max(6, { each: true })
+  repeatWeekdays?: number[];
+
+  /** (Lặp theo tháng) theo NGÀY trong tháng, theo THỨ thứ-n, hoặc THỨ cuối cùng. */
+  @IsOptional()
+  @IsIn(['monthday', 'nthWeekday', 'lastWeekday'])
+  repeatMonthlyMode?: 'monthday' | 'nthWeekday' | 'lastWeekday';
+
+  /** Kết thúc "Sau N lần" — số lần lặp (tính cả lần đầu). Tối đa 366. */
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Max(366)
   repeatCount?: number;
+
+  /** Kết thúc "Vào ngày" — mốc dừng (ISO). Không gửi = không giới hạn (bị chặn cứng ~2 năm). */
+  @IsOptional()
+  @IsISO8601()
+  repeatUntil?: string;
 
   /** (LEGACY) Nhắc trước bao nhiêu phút — giữ cho tương thích sự kiện cũ; FE mới dùng `reminders`. */
   @IsOptional()
