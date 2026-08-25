@@ -254,7 +254,7 @@ export class EventsService {
     // Gán khách mời cho TẤT CẢ các lần lặp; chỉ gửi email mời cho lần đầu tiên
     if (dto.guestEmails?.length) {
       for (const ev of events) {
-        const added = await this.syncAttendees(supabase, ev.id, dto.guestEmails);
+        const added = await this.syncAttendees(supabase, ev.id, dto.guestEmails, dto.guestEditors ?? []);
         if (ev.id === first.id) {
           // Gửi email NGẦM (không await) -> phản hồi về frontend ngay, không phải chờ SMTP
           void this.sendInvites(ev.id, added, {
@@ -348,8 +348,11 @@ export class EventsService {
       }
     }
 
-    if (dto.guestEmails !== undefined) {
-      const added = await this.syncAttendees(supabase, id, dto.guestEmails);
+    // Quản lý khách mời (thêm/gỡ/đổi quyền) CHỈ dành cho CHỦ sự kiện. Khách editor được
+    // sửa nội dung nhưng KHÔNG quản khách -> bỏ qua syncAttendees để không đụng RLS.
+    const isCreator = !existing.creator_id || !userId || existing.creator_id === userId;
+    if (dto.guestEmails !== undefined && isCreator) {
+      const added = await this.syncAttendees(supabase, id, dto.guestEmails, dto.guestEditors ?? []);
       // Gửi email mời NGẦM cho khách MỚI thêm (không await -> phản hồi ngay, không chờ SMTP)
       void this.sendInvites(id, added, {
         title: event.title,
@@ -518,10 +521,15 @@ export class EventsService {
     supabase: SupabaseClient,
     eventId: string,
     emails: string[],
+    editorEmails: string[] = [],
   ): Promise<{ email: string; token: string }[]> {
-    const { data: existing } = await supabase.from('event_attendees').select('email').eq('event_id', eventId);
-    const existingLower = new Set((existing ?? []).map((a) => a.email.toLowerCase()));
+    const { data: existing } = await supabase
+      .from('event_attendees')
+      .select('email, can_edit')
+      .eq('event_id', eventId);
+    const existingMap = new Map((existing ?? []).map((a) => [a.email.toLowerCase(), a]));
     const keepLower = new Set(emails.map((e) => e.toLowerCase()));
+    const editorSet = new Set(editorEmails.map((e) => e.toLowerCase()));
 
     const toRemove = (existing ?? []).map((a) => a.email).filter((e) => !keepLower.has(e.toLowerCase()));
     if (toRemove.length) {
@@ -530,7 +538,15 @@ export class EventsService {
 
     const added: { email: string; token: string }[] = [];
     for (const email of emails) {
-      if (existingLower.has(email.toLowerCase())) continue;
+      const canEdit = editorSet.has(email.toLowerCase());
+      const prev = existingMap.get(email.toLowerCase());
+      if (prev) {
+        // Đã là khách -> chỉ cập nhật quyền nếu đổi (bật/tắt chỉnh sửa).
+        if ((prev as any).can_edit !== canEdit) {
+          await supabase.from('event_attendees').update({ can_edit: canEdit }).eq('event_id', eventId).eq('email', email);
+        }
+        continue;
+      }
       const token = randomUUID();
       const tokenExpires = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(); // hết hạn sau 7 ngày
       const { error } = await supabase.from('event_attendees').insert({
@@ -539,6 +555,7 @@ export class EventsService {
         status: 'needsAction',
         respond_token: token,
         token_expires_at: tokenExpires,
+        can_edit: canEdit,
       });
       if (error) throw error;
       added.push({ email, token });

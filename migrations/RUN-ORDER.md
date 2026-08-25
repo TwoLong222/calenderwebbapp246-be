@@ -17,8 +17,9 @@ Chạy trong **Supabase Dashboard › SQL Editor › New query**: mở file → 
 - **Người được chia sẻ không thấy lịch** → chạy `2026-08-phase6d-calendar-sharing.sql`
 - **Chia sẻ giới hạn khoảng ngày (từ → đến)** → chạy phase6d **rồi** `2026-08-phase14-share-date-range.sql`
 - **Link .ics công khai báo lỗi** → chạy `2026-08-phase13-calendar-feed.sql`
+- **Khách mời được quyền chỉnh sửa sự kiện** → chạy `2026-08-phase15-attendee-editor.sql`
 
-Ba file trên chỉ THÊM cái mới nên chạy sạch trên mọi DB.
+Các file trên chỉ THÊM cái mới nên chạy sạch trên mọi DB.
 
 ---
 
@@ -51,5 +52,6 @@ Ký hiệu: **[NỀN]** nền tảng · **[cũ/vá]** vá đời cũ, bỏ qua n
 23. `2026-08-enable-realtime-events.sql` — bật realtime events
 24. `2026-08-phase13-calendar-feed.sql` — **[BẮT BUỘC]** feed .ics công khai
 25. `2026-08-phase14-share-date-range.sql` — **[BẮT BUỘC]** chia sẻ giới hạn khoảng ngày (chạy SAU phase6d)
+26. `2026-08-phase15-attendee-editor.sql` — **[BẮT BUỘC]** khách mời có quyền chỉnh sửa sự kiện (cột can_edit)
 
 > Quy tắc: file **[cũ/vá]** báo lỗi → BỎ QUA. File **[BẮT BUỘC]** / **[NỀN]** báo lỗi → gửi câu lỗi để xử lý.

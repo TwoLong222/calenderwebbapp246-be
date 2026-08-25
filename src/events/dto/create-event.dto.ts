@@ -54,6 +54,12 @@ export class CreateEventDto {
   @IsEmail({}, { each: true })
   guestEmails?: string[];
 
+  /** Tập con của guestEmails được quyền CHỈNH SỬA sự kiện (can_edit=true). Còn lại = chỉ xem. */
+  @IsOptional()
+  @IsArray()
+  @IsEmail({}, { each: true })
+  guestEditors?: string[];
+
   /** Kiểu lặp lại của sự kiện — 'none' hoặc không gửi = không lặp */
   @IsOptional()
   @IsIn(['none', 'daily', 'weekly', 'monthly', 'yearly'])
