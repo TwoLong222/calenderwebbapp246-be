@@ -1,5 +1,5 @@
 // Chủ trang cập nhật cấu hình trang đặt lịch của mình.
-import { IsBoolean, IsIn, IsInt, IsOptional, IsString, Matches, MaxLength, MinLength } from 'class-validator';
+import { IsBoolean, IsInt, IsOptional, IsString, Matches, Max, MaxLength, Min, MinLength } from 'class-validator';
 
 export class UpdateBookingPageDto {
   @IsOptional()
@@ -10,6 +10,7 @@ export class UpdateBookingPageDto {
   slug?: string;
 
   @IsOptional() @IsString() @MaxLength(80) title?: string;
-  @IsOptional() @IsInt() @IsIn([15, 30, 60]) duration_minutes?: number;
+  /** Thời lượng mỗi lịch hẹn — TỰ DO trong khoảng 5..480 phút (khớp check ở DB, phase16). */
+  @IsOptional() @IsInt() @Min(5) @Max(480) duration_minutes?: number;
   @IsOptional() @IsBoolean() enabled?: boolean;
 }

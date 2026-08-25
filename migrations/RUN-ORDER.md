@@ -19,6 +19,7 @@ Chạy trong **Supabase Dashboard › SQL Editor › New query**: mở file → 
 - **Link .ics công khai báo lỗi** → chạy `2026-08-phase13-calendar-feed.sql`
 - **Khách mời được quyền chỉnh sửa sự kiện** → chạy `2026-08-phase15-attendee-editor.sql`
 - **Nhắc lịch linh hoạt (nhiều mốc + chuông realtime)** → chạy `2026-08-phase8-flexible-reminders.sql`
+- **Thời lượng lịch hẹn tự do (không chỉ 15/30/60 phút)** → chạy `2026-08-phase16-booking-free-duration.sql`
 
 Các file trên chỉ THÊM cái mới nên chạy sạch trên mọi DB.
 
