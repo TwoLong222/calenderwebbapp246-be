@@ -55,7 +55,7 @@ export class EventsController {
   @Patch(':id')
   update(@Req() req: any, @CurrentUser() user: User, @Param('id') id: string, @Body() dto: UpdateEventDto) {
     // Truyền user.id để kiểm tra quyền: chỉ người tạo mới được đổi giờ bắt đầu/kết thúc.
-    return this.eventsService.updateEvent(req.supabase, id, dto, user.id);
+    return this.eventsService.updateEvent(req.supabase, id, dto, user.id, user.email ?? '');
   }
 
   @Delete(':id')

@@ -407,7 +407,20 @@ export class EventsService {
     return { event: { ...first, attendees, reminders }, conflicts };
   }
 
-  async updateEvent(supabase: SupabaseClient, id: string, dto: UpdateEventDto, userId?: string) {
+  /** Khách mời của sự kiện này có được cấp quyền CHỈNH SỬA (can_edit) không? */
+  private async isAttendeeEditor(eventId: string, userEmail?: string): Promise<boolean> {
+    const email = (userEmail ?? '').trim();
+    if (!email) return false;
+    const { data } = await this.supabaseService.adminClient
+      .from('event_attendees')
+      .select('can_edit')
+      .eq('event_id', eventId)
+      .ilike('email', email)
+      .maybeSingle();
+    return (data as any)?.can_edit === true;
+  }
+
+  async updateEvent(supabase: SupabaseClient, id: string, dto: UpdateEventDto, userId?: string, userEmail?: string) {
     const { data: existing, error: fetchError } = await supabase
       .from('events')
       .select('calendar_id, start_time, end_time, is_all_day, creator_id')
@@ -421,8 +434,13 @@ export class EventsService {
     const timeChanged =
       (dto.startTime !== undefined && new Date(dto.startTime).getTime() !== new Date(existing.start_time).getTime()) ||
       (dto.endTime !== undefined && new Date(dto.endTime).getTime() !== new Date(existing.end_time).getTime());
+    // Khách được cấp quyền CHỈNH SỬA (can_edit, phase15) cũng được đổi giờ — nếu không,
+    // họ kéo/sửa xong sẽ bị chặn và giao diện tự trả về giờ cũ (nhìn như "không sửa được").
     if (timeChanged && existing.creator_id && userId && existing.creator_id !== userId) {
-      throw new ForbiddenException('Chỉ người tạo mới được đổi giờ bắt đầu/kết thúc của sự kiện này.');
+      const isEditor = await this.isAttendeeEditor(id, userEmail);
+      if (!isEditor) {
+        throw new ForbiddenException('Chỉ người tạo hoặc khách được cấp quyền chỉnh sửa mới đổi được giờ của sự kiện này.');
+      }
     }
 
     const nextStart = dto.startTime ?? existing.start_time;
