@@ -262,22 +262,10 @@ export class GroupsService {
     dto: UpdateGroupEventDto,
     userId?: string,
   ) {
-    // QUYỀN: chỉ NGƯỜI TẠO sự kiện nhóm mới được ĐỔI GIỜ bắt đầu/kết thúc; thành viên
-    // khác vẫn sửa được các trường khác nhưng không dời được giờ họp. So sánh giá trị THỰC
-    // SỰ thay đổi vì form luôn gửi kèm start/end mỗi lần lưu.
-    if ((dto.startTime !== undefined || dto.endTime !== undefined) && userId) {
-      const { data: cur } = await supabase
-        .from('events')
-        .select('creator_id, start_time, end_time')
-        .eq('id', eventId)
-        .eq('group_id', groupId)
-        .maybeSingle();
-      const timeChanged =
-        (dto.startTime !== undefined && new Date(dto.startTime).getTime() !== new Date(cur?.start_time).getTime()) ||
-        (dto.endTime !== undefined && new Date(dto.endTime).getTime() !== new Date(cur?.end_time).getTime());
-      if (timeChanged && cur?.creator_id && cur.creator_id !== userId) {
-        throw new ForbiddenException('Chỉ người tạo mới được đổi giờ bắt đầu/kết thúc của sự kiện này.');
-      }
+    // QUYỀN: chỉ NGƯỜI TẠO sự kiện nhóm (hoặc CHỦ NHÓM) mới được THAY ĐỔI sự kiện.
+    // Thành viên khác chỉ xem, không sửa gì (kể cả tiêu đề/giờ/màu...).
+    if (userId) {
+      await this.assertCanModifyGroupEvent(supabase, groupId, eventId, userId);
     }
 
     const patch: Record<string, unknown> = {};
@@ -307,10 +295,34 @@ export class GroupsService {
     return { event, conflicts };
   }
 
-  async deleteEvent(supabase: SupabaseClient, groupId: string, eventId: string) {
+  async deleteEvent(supabase: SupabaseClient, groupId: string, eventId: string, userId?: string) {
+    // QUYỀN: chỉ người tạo sự kiện (hoặc chủ nhóm) mới được xóa.
+    if (userId) {
+      await this.assertCanModifyGroupEvent(supabase, groupId, eventId, userId);
+    }
     const { error } = await supabase.from('events').delete().eq('id', eventId).eq('group_id', groupId);
     if (error) throw error;
     return { id: eventId };
+  }
+
+  /** Chặn thao tác sửa/xóa sự kiện nhóm nếu user KHÔNG phải người tạo và KHÔNG phải chủ nhóm. */
+  private async assertCanModifyGroupEvent(
+    supabase: SupabaseClient,
+    groupId: string,
+    eventId: string,
+    userId: string,
+  ): Promise<void> {
+    const { data: cur } = await supabase
+      .from('events')
+      .select('creator_id')
+      .eq('id', eventId)
+      .eq('group_id', groupId)
+      .maybeSingle();
+    // Sự kiện cũ chưa có creator_id -> không chặn (giữ tương thích dữ liệu cũ).
+    if (!cur?.creator_id || cur.creator_id === userId) return;
+    const { data: group } = await this.admin.from('groups').select('owner_id').eq('id', groupId).maybeSingle();
+    if (group?.owner_id === userId) return; // chủ nhóm được toàn quyền
+    throw new ForbiddenException('Chỉ người tạo sự kiện (hoặc chủ nhóm) mới được thay đổi sự kiện này.');
   }
 
   /** Gắn (hoặc cập nhật) link Google Meet cho một sự kiện nhóm. */

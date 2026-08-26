@@ -423,7 +423,7 @@ export class EventsService {
   async updateEvent(supabase: SupabaseClient, id: string, dto: UpdateEventDto, userId?: string, userEmail?: string) {
     const { data: existing, error: fetchError } = await supabase
       .from('events')
-      .select('calendar_id, start_time, end_time, is_all_day, creator_id')
+      .select('calendar_id, start_time, end_time, is_all_day, creator_id, series_id')
       .eq('id', id)
       .single();
     if (fetchError) throw fetchError;
@@ -512,6 +512,73 @@ export class EventsService {
         .from('event_attendees')
         .update({ reminder_sent_at: null })
         .eq('event_id', id);
+    }
+
+    // ---------- LẶP LẠI KHI SỬA (phase #24) ----------
+    // Độ lệch giờ giữa bản cũ và bản mới — dùng để dời cả chuỗi mà vẫn giữ khoảng cách.
+    const deltaStart = new Date(event.start_time).getTime() - new Date(existing.start_time).getTime();
+    const deltaEnd = new Date(event.end_time).getTime() - new Date(existing.end_time).getTime();
+
+    // CASE A: sự kiện CHƯA thuộc chuỗi + người dùng chọn kiểu lặp -> sinh chuỗi mới TỪ sự kiện này.
+    const rule = this.buildRule(dto as any);
+    if (rule && !existing.series_id) {
+      const seriesId = randomUUID();
+      await supabase.from('events').update({ series_id: seriesId }).eq('id', id);
+      event.series_id = seriesId;
+      // Sinh các lần lặp theo giờ MỚI; bỏ lần đầu (chính là sự kiện đang sửa).
+      const extra = this.generateOccurrences(event.start_time, event.end_time, rule).slice(1);
+      if (extra.length) {
+        const rows = extra.map((o) => ({
+          calendar_id: event.calendar_id,
+          title: event.title,
+          description: event.description ?? null,
+          location: event.location ?? null,
+          start_time: o.start,
+          end_time: o.end,
+          is_all_day: event.is_all_day,
+          kind: event.kind,
+          color: event.color,
+          reminder_minutes: event.reminder_minutes ?? null,
+          reminder_message: event.reminder_message ?? null,
+          series_id: seriesId,
+          creator_id: event.creator_id,
+          creator_email: event.creator_email ?? null,
+        }));
+        const { data: newEvents, error: genErr } = await supabase.from('events').insert(rows).select('id');
+        if (genErr) this.logger.warn(`Không sinh được chuỗi lặp khi sửa: ${genErr.message}`);
+        // Nhân bản bộ mốc nhắc (event_reminders) của sự kiện gốc cho mọi lần lặp mới.
+        const { data: rems } = await supabase.from('event_reminders').select('minutes_before').eq('event_id', id);
+        const mins = (rems ?? []).map((r: any) => r.minutes_before as number);
+        if (mins.length && newEvents?.length) {
+          const rrows = newEvents.flatMap((ne: any) => mins.map((m) => ({ event_id: ne.id, minutes_before: m })));
+          await supabase.from('event_reminders').insert(rrows);
+        }
+      }
+    }
+
+    // CASE B: sửa CẢ CHUỖI -> áp nội dung + dời giờ (theo độ lệch) cho mọi sự kiện cùng series_id.
+    if (dto.editScope === 'series' && existing.series_id) {
+      const { data: siblings } = await supabase
+        .from('events')
+        .select('id, start_time, end_time')
+        .eq('series_id', existing.series_id)
+        .neq('id', id);
+      for (const sib of siblings ?? []) {
+        const p: Record<string, unknown> = {};
+        if (dto.title !== undefined) p['title'] = event.title;
+        if (dto.description !== undefined) p['description'] = event.description ?? null;
+        if (dto.location !== undefined) p['location'] = event.location ?? null;
+        if (dto.color !== undefined) p['color'] = event.color;
+        if (dto.isAllDay !== undefined) p['is_all_day'] = event.is_all_day;
+        if (dto.kind !== undefined) p['kind'] = event.kind;
+        if (dto.reminderMinutes !== undefined) p['reminder_minutes'] = event.reminder_minutes ?? null;
+        if (dto.reminderMessage !== undefined) p['reminder_message'] = event.reminder_message ?? null;
+        if (deltaStart !== 0) p['start_time'] = new Date(new Date(sib.start_time).getTime() + deltaStart).toISOString();
+        if (deltaEnd !== 0) p['end_time'] = new Date(new Date(sib.end_time).getTime() + deltaEnd).toISOString();
+        if (Object.keys(p).length > 0) {
+          await supabase.from('events').update(p).eq('id', sib.id);
+        }
+      }
     }
 
     // Đổi giờ/tiêu đề/địa điểm -> báo email CẬP NHẬT cho khách hiện có (tôn trọng preference).

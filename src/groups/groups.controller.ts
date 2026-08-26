@@ -138,8 +138,13 @@ export class GroupsController {
   }
 
   @Delete(':id/events/:eventId')
-  async deleteEvent(@Req() req: any, @Param('id') id: string, @Param('eventId') eventId: string) {
-    const res = await this.groups.deleteEvent(req.supabase, id, eventId);
+  async deleteEvent(
+    @Req() req: any,
+    @CurrentUser() user: User,
+    @Param('id') id: string,
+    @Param('eventId') eventId: string,
+  ) {
+    const res = await this.groups.deleteEvent(req.supabase, id, eventId, user.id);
     this.gateway.emitToGroup(id, 'deleted', { id: eventId });
     return res;
   }

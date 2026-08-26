@@ -14,6 +14,8 @@ export interface AiParseResult {
   title?: string;
   startTime?: string; // ISO 8601
   endTime?: string; // ISO 8601
+  // create_event: true nếu người dùng muốn tạo kèm phòng họp Google Meet (họp online)
+  withMeet?: boolean;
   // search / reschedule / delete / invite: từ khóa tên sự kiện cần thao tác
   query?: string;
   // invite_guest: danh sách email khách cần thêm vào sự kiện
@@ -141,8 +143,9 @@ Người dùng nói 1 câu để thao tác lịch. Xác định Ý ĐỊNH và t
   "title": "chỉ dùng cho create_event: tiêu đề ngắn gọn",
   "startTime": "create_event: ISO 8601 giờ bắt đầu",
   "endTime": "create_event: ISO 8601 giờ kết thúc, mặc định +1 tiếng nếu không rõ",
+  "withMeet": "create_event only: true nếu người dùng muốn tạo KÈM phòng họp Google Meet / họp online / video call. Mặc định false.",
   "query": "search/reschedule/delete/invite: từ khóa TÊN sự kiện cần tìm/dời/xóa/thêm khách (vd 'họp nhóm')",
-  "guestEmails": "invite_guest only: mảng email khách cần thêm vào sự kiện (vd ['an@gmail.com'])",
+  "guestEmails": "invite_guest HOẶC create_event: mảng email khách cần mời (vd ['an@gmail.com']). Với create_event: dùng khi người dùng VỪA tạo VỪA mời người vào ngay lúc tạo.",
   "rangeStart": "search: ISO 8601 đầu khoảng thời gian nếu có (vd 'tuần này')",
   "rangeEnd": "search: ISO 8601 cuối khoảng",
   "newStartTime": "reschedule: ISO 8601 giờ bắt đầu MỚI",
@@ -151,6 +154,10 @@ Người dùng nói 1 câu để thao tác lịch. Xác định Ý ĐỊNH và t
 }
 Ví dụ ý định:
 - "mai 3h chiều họp nhóm 1 tiếng" -> create_event
+- "mai 3h chiều họp online 1 tiếng, tạo phòng meet" -> create_event (withMeet=true)
+- "tạo cuộc họp zoom/google meet lúc 9h sáng mai" -> create_event (withMeet=true)
+- "mai 3h họp nhóm 1 tiếng, mời an@gmail.com" -> create_event (title, startTime, endTime, guestEmails=["an@gmail.com"])
+- "tạo họp nhóm 9h mai và mời an@gmail.com, binh@gmail.com" -> create_event (guestEmails=["an@gmail.com","binh@gmail.com"])
 - "tuần này có họp gì" -> search_events (query rỗng, range = tuần này)
 - "tìm sự kiện tập gym" -> search_events (query="tập gym")
 - "dời họp nhóm sang 4h chiều" -> reschedule_event (query="họp nhóm", newStartTime=...)
@@ -162,6 +169,10 @@ Quy tắc QUAN TRỌNG:
 - Nhưng GIỜ thì KHÔNG được tự chế. Nếu người dùng KHÔNG nói giờ cụ thể (vd "mai đi học" — thiếu giờ),
   BẮT BUỘC trả "intent":"unclear" và "reply" hỏi lại giờ (vd "Mấy giờ vậy bạn?"). TUYỆT ĐỐI không mặc định 8:00 hay giờ bất kỳ.
 - Thời LƯỢNG thì được mặc định 1 tiếng nếu người dùng không nói.
+- withMeet: đặt true khi người dùng nhắc tới "phòng meet", "google meet", "họp online", "video call", "link họp", "online".
+  Nếu không nhắc gì tới họp online -> để false (hoặc bỏ qua). Chỉ dùng cho create_event.
+- create_event + mời người: nếu người dùng VỪA tạo sự kiện VỪA muốn mời ai đó (có email) trong CÙNG một câu,
+  giữ intent="create_event" và điền guestEmails. ĐỪNG tách thành invite_guest (invite_guest chỉ cho sự kiện ĐÃ có).
 - reschedule: nếu không có giờ mới -> "unclear" hỏi "Dời sang lúc nào?".
 - invite_guest: dùng khi người dùng muốn MỜI/THÊM người (theo email) vào 1 sự kiện đã có.
   Nếu thiếu email hợp lệ -> "unclear" hỏi email. Nếu thiếu tên sự kiện -> "unclear" hỏi sự kiện nào.
