@@ -3,9 +3,15 @@
  * This is only a minimal backend to get started.
  */
 
+import { setDefaultResultOrder } from 'node:dns';
 import { Logger, ValidationPipe } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app/app.module';
+
+// Một số nền tảng (Render...) KHÔNG định tuyến ra ngoài bằng IPv6 -> Node phân giải smtp.gmail.com
+// ra địa chỉ IPv6 rồi kết nối thất bại (ENETUNREACH / Connection timeout) khiến gửi email tịt.
+// Ép phân giải DNS ưu tiên IPv4 để SMTP (và mọi kết nối ra ngoài) đi qua IPv4.
+setDefaultResultOrder('ipv4first');
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
