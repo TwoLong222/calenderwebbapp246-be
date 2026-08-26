@@ -29,6 +29,7 @@ export class SupabaseAuthGuard implements CanActivate {
     const { data, error } = await this.supabaseService.adminClient.auth.getUser(token);
 
     if (error || !data.user) {
+      console.error('[SupabaseAuthGuard] token bị từ chối:', error?.message ?? '(không có user)', '| token prefix:', token.slice(0, 12));
       throw new UnauthorizedException('Access token không hợp lệ hoặc đã hết hạn.');
     }
 
