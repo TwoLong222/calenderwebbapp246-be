@@ -11,6 +11,7 @@ import {
   IsISO8601,
   IsOptional,
   IsString,
+  Matches as MatchesRule,
   Max,
   MaxLength,
   Min,
@@ -45,8 +46,12 @@ export class CreateEventDto {
   @IsIn(['event', 'task'])
   kind?: 'event' | 'task';
 
+  // Màu: hoặc 1 trong các tên dựng sẵn, hoặc mã hex người dùng TỰ CHỌN (#rgb / #rrggbb).
+  // Regex đóng khung chặt để không nhận chuỗi lạ (tránh nhét CSS/HTML vào chỗ đổ màu).
   @IsOptional()
-  @IsIn(['sky', 'violet', 'emerald', 'rose', 'amber'])
+  @MatchesRule(/^(sky|violet|emerald|rose|amber|#([0-9a-fA-F]{3}|[0-9a-fA-F]{6}))$/, {
+    message: 'color phải là tên màu dựng sẵn hoặc mã hex dạng #rrggbb',
+  })
   color?: string;
 
   @IsOptional()
