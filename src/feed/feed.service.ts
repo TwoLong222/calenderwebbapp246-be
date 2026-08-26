@@ -33,7 +33,7 @@ export class FeedService {
   async getOrCreateOwnFeed(supabase: SupabaseClient, userId: string) {
     const { data } = await supabase
       .from('calendar_feeds')
-      .select('token, enabled')
+      .select('token, enabled, feed_from, feed_until')
       .eq('user_id', userId)
       .maybeSingle();
     if (data) return data;
@@ -41,7 +41,7 @@ export class FeedService {
     const { data: created, error } = await supabase
       .from('calendar_feeds')
       .insert({ user_id: userId, token: this.newToken() })
-      .select('token, enabled')
+      .select('token, enabled, feed_from, feed_until')
       .single();
     if (error) throw new BadRequestException(error.message);
     return created;
@@ -53,6 +53,10 @@ export class FeedService {
     const patch: Record<string, any> = {};
     if (dto.enabled !== undefined) patch.enabled = dto.enabled;
     if (dto.rotate) patch.token = this.newToken(); // đổi token -> link cũ hết hiệu lực
+    // Khoảng ngày chia sẻ: rỗng -> null (không giới hạn).
+    const toIso = (v?: string | null) => (v ? new Date(v).toISOString() : null);
+    if (dto.feedFrom !== undefined) patch.feed_from = toIso(dto.feedFrom);
+    if (dto.feedUntil !== undefined) patch.feed_until = toIso(dto.feedUntil);
     if (Object.keys(patch).length === 0) {
       return this.getOrCreateOwnFeed(supabase, userId);
     }
@@ -60,7 +64,7 @@ export class FeedService {
       .from('calendar_feeds')
       .update(patch)
       .eq('user_id', userId)
-      .select('token, enabled')
+      .select('token, enabled, feed_from, feed_until')
       .single();
     if (error) throw new BadRequestException(error.message);
     return data;
@@ -73,7 +77,7 @@ export class FeedService {
     const token = rawToken.replace(/\.ics$/i, '');
     const { data: feed } = await this.admin
       .from('calendar_feeds')
-      .select('user_id, enabled')
+      .select('user_id, enabled, feed_from, feed_until')
       .eq('token', token)
       .eq('enabled', true)
       .maybeSingle();
@@ -88,8 +92,11 @@ export class FeedService {
 
     let events: any[] = [];
     if (cal) {
-      const fromIso = new Date(Date.now() - PAST_DAYS * 86400000).toISOString();
-      const toIso = new Date(Date.now() + FUTURE_DAYS * 86400000).toISOString();
+      // Chủ feed có thể giới hạn khoảng ngày chia sẻ; không đặt thì dùng cửa sổ mặc định.
+      const fromIso =
+        (feed as any).feed_from ?? new Date(Date.now() - PAST_DAYS * 86400000).toISOString();
+      const toIso =
+        (feed as any).feed_until ?? new Date(Date.now() + FUTURE_DAYS * 86400000).toISOString();
       const { data } = await this.admin
         .from('events')
         .select('id, title, description, location, start_time, end_time, is_all_day, updated_at')
