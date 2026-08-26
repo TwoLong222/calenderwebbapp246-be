@@ -11,6 +11,7 @@ import {
   WebSocketGateway,
   WebSocketServer,
 } from '@nestjs/websockets';
+import { Logger } from '@nestjs/common';
 import type { Server, Socket } from 'socket.io';
 import { SupabaseService } from '../supabase/supabase.service';
 import { GroupsService } from './groups.service';
@@ -23,6 +24,7 @@ interface SocketUser {
 @WebSocketGateway({ cors: { origin: true, credentials: true } })
 export class GroupRealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect {
   @WebSocketServer() server!: Server;
+  private readonly logger = new Logger('GroupRealtimeGateway');
 
   constructor(
     private readonly supabaseService: SupabaseService,
@@ -33,14 +35,17 @@ export class GroupRealtimeGateway implements OnGatewayConnection, OnGatewayDisco
   async handleConnection(client: Socket): Promise<void> {
     const token = (client.handshake.auth?.token as string) || '';
     if (!token) {
+      this.logger.warn(`Socket ${client.id} bị từ chối: KHÔNG có token (chưa đăng nhập xong?)`);
       client.disconnect(true);
       return;
     }
     const { data, error } = await this.supabaseService.adminClient.auth.getUser(token);
     if (error || !data.user) {
+      this.logger.warn(`Socket ${client.id} bị từ chối: token KHÔNG hợp lệ (${error?.message ?? 'no user'})`);
       client.disconnect(true);
       return;
     }
+    this.logger.log(`✅ Socket connect: ${data.user.email} (${client.id})`);
     client.data.user = { id: data.user.id, email: data.user.email ?? '' } as SocketUser;
     client.data.token = token;
     // Phòng riêng theo user (KHÁC phòng theo nhóm) — nơi nhận thông báo "danh sách nhóm
