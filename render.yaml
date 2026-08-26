@@ -26,7 +26,15 @@ services:
       # --- Trợ lý AI ---
       - key: GEMINI_API_KEY
         sync: false
-      # --- Gửi email (Gmail SMTP hoặc dịch vụ khác) ---
+      # --- Gửi email QUA HTTPS (Brevo) — KHUYẾN NGHỊ trên Render (SMTP bị chặn ở gói free) ---
+      # Lấy API key: brevo.com > Settings > SMTP & API > API Keys. Email người gửi phải được
+      # xác minh trong Brevo > Senders. Có BREVO_API_KEY -> tự dùng Brevo, bỏ qua SMTP.
+      - key: BREVO_API_KEY
+        sync: false
+      # Người gửi (nên trùng SMTP_FROM); để trống thì lấy SMTP_FROM/SMTP_USER.
+      - key: BREVO_SENDER
+        sync: false
+      # --- Gửi email qua SMTP (dùng cho local; Render free CHẶN cổng SMTP nên không chạy) ---
       - key: SMTP_HOST
         sync: false
       - key: SMTP_PORT

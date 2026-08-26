@@ -44,14 +44,22 @@ export class MailService {
   private readonly logger = new Logger(MailService.name);
   private readonly fromAddress: string;
 
-  /** Tầng đang dùng: 'gmail-api' (nhanh) hoặc 'smtp' (dự phòng). */
-  private readonly mode: 'gmail-api' | 'smtp';
+  /**
+   * Tầng đang dùng:
+   *  - 'brevo'   : gửi qua Brevo HTTP API (HTTPS 443) — KHÔNG bị chặn như SMTP trên Render free.
+   *  - 'gmail-api': gửi qua Gmail REST (HTTPS 443).
+   *  - 'smtp'    : nodemailer SMTP (dự phòng, dùng cho local — Render free chặn cổng SMTP).
+   */
+  private readonly mode: 'brevo' | 'gmail-api' | 'smtp';
 
-  // Chỉ 1 trong 2 được khởi tạo, tùy mode.
+  // Chỉ 1 nhánh được khởi tạo, tùy mode.
+  private brevoApiKey?: string;
+  private brevoSender?: { name?: string; email: string };
   private gmail?: gmail_v1.Gmail;
   private transporter?: nodemailer.Transporter;
 
   constructor(private readonly config: ConfigService) {
+    const brevoKey = this.config.get<string>('BREVO_API_KEY');
     const clientId = this.config.get<string>('GMAIL_CLIENT_ID');
     const clientSecret = this.config.get<string>('GMAIL_CLIENT_SECRET');
     const refreshToken = this.config.get<string>('GMAIL_REFRESH_TOKEN');
@@ -61,7 +69,24 @@ export class MailService {
       this.config.get<string>('SMTP_USER') ??
       this.config.get<string>('SMTP_FROM');
 
-    if (clientId && clientSecret && refreshToken && gmailSender) {
+    if (brevoKey) {
+      // ----- Tầng 0: BREVO API (HTTPS, né chặn SMTP của Render) -----
+      this.brevoApiKey = brevoKey;
+      // Email người gửi PHẢI là địa chỉ đã xác minh trong Brevo (Senders). Ưu tiên BREVO_SENDER,
+      // rồi tới SMTP_FROM ("Tên <email>") / SMTP_USER / GMAIL_SENDER.
+      const senderRaw =
+        this.config.get<string>('BREVO_SENDER') ??
+        this.config.get<string>('SMTP_FROM') ??
+        this.config.get<string>('SMTP_USER') ??
+        gmailSender ??
+        '';
+      const parsed = this.parseAddress(senderRaw);
+      const email = parsed.email || this.config.get<string>('SMTP_USER') || '';
+      this.brevoSender = { name: parsed.name || 'Lịch', email };
+      this.fromAddress = senderRaw || email;
+      this.mode = 'brevo';
+      this.logger.log(`MailService dùng BREVO API (gửi qua HTTPS) — người gửi ${email}`);
+    } else if (clientId && clientSecret && refreshToken && gmailSender) {
       // ----- Tầng 1: GMAIL API (nhanh) -----
       const oauth2 = new googleAuth.OAuth2(clientId, clientSecret);
       oauth2.setCredentials({ refresh_token: refreshToken });
@@ -119,6 +144,29 @@ export class MailService {
   private async deliverOrThrow(options: Mail.Options): Promise<void> {
     const mail: Mail.Options = { from: this.fromAddress, ...options };
 
+    if (this.mode === 'brevo' && this.brevoApiKey && this.brevoSender) {
+      const res = await fetch('https://api.brevo.com/v3/smtp/email', {
+        method: 'POST',
+        headers: {
+          'api-key': this.brevoApiKey,
+          'Content-Type': 'application/json',
+          accept: 'application/json',
+        },
+        body: JSON.stringify({
+          sender: this.brevoSender,
+          to: this.toRecipients(mail.to),
+          subject: typeof mail.subject === 'string' ? mail.subject : '',
+          htmlContent: typeof mail.html === 'string' ? mail.html : undefined,
+          textContent: typeof mail.text === 'string' ? mail.text : undefined,
+        }),
+      });
+      if (!res.ok) {
+        const body = await res.text().catch(() => '');
+        throw new Error(`Brevo API ${res.status}: ${body.slice(0, 300)}`);
+      }
+      return;
+    }
+
     if (this.mode === 'gmail-api' && this.gmail) {
       const raw = await this.buildRawMessage(mail);
       await this.gmail.users.messages.send({ userId: 'me', requestBody: { raw } });
@@ -139,6 +187,32 @@ export class MailService {
       .replace(/\+/g, '-')
       .replace(/\//g, '_')
       .replace(/=+$/, '');
+  }
+
+  /** Tách "Tên <email@x>" hoặc "email@x" thành { name?, email }. */
+  private parseAddress(input: string): { name?: string; email: string } {
+    const s = (input ?? '').trim();
+    const m = s.match(/^(.*)<([^>]+)>\s*$/);
+    if (m) {
+      const name = m[1].trim().replace(/^["']|["']$/g, '');
+      return { name: name || undefined, email: m[2].trim() };
+    }
+    return { email: s };
+  }
+
+  /** Chuẩn hóa trường "to" của nodemailer thành mảng { email } cho Brevo (chỉ dùng chuỗi email). */
+  private toRecipients(to: Mail.Options['to']): { email: string }[] {
+    const raw =
+      typeof to === 'string'
+        ? to
+        : Array.isArray(to)
+          ? to.map((t) => (typeof t === 'string' ? t : (t as any)?.address ?? '')).join(',')
+          : ((to as any)?.address ?? '');
+    return raw
+      .split(',')
+      .map((p: string) => this.parseAddress(p))
+      .filter((a: { email: string }) => !!a.email)
+      .map((a: { email: string }) => ({ email: a.email }));
   }
 
   async sendEventReminder(params: ReminderEmailParams): Promise<void> {
