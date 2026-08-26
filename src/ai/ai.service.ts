@@ -36,6 +36,20 @@ export interface AiParseResult {
   reply: string; // câu phản hồi cho người dùng
 }
 
+export interface ExtractedEventItem {
+  title: string;
+  startTime: string; // ISO 8601
+  endTime: string; // ISO 8601
+  isAllDay?: boolean;
+  location?: string;
+  description?: string;
+}
+
+export interface AiExtractResult {
+  events: ExtractedEventItem[];
+  reply: string;
+}
+
 @Injectable()
 export class AiService {
   private readonly logger = new Logger(AiService.name);
@@ -195,41 +209,8 @@ Quy tắc QUAN TRỌNG:
             '\n\n'
           : '';
 
-      const url = `https://generativelanguage.googleapis.com/v1beta/models/${this.MODEL}:generateContent`;
-      const reqBody = JSON.stringify({
-        contents: [{ parts: [{ text: `${systemPrompt}\n\n${historyBlock}Câu người dùng: "${userText}"` }] }],
-        generationConfig: { responseMimeType: 'application/json', temperature: 0.2 },
-      });
-
-      // Model có thể bị quá tải (503) hoặc rate-limit (429) tạm thời -> tự thử lại tối đa 3 lần
-      let data: any;
-      let ok = false;
-      for (let attempt = 1; attempt <= 3; attempt++) {
-        const res = await fetch(url, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey },
-          body: reqBody,
-        });
-        data = await res.json();
-        if (res.ok) {
-          ok = true;
-          break;
-        }
-        if ((res.status === 503 || res.status === 429) && attempt < 3) {
-          this.logger.warn(`Gemini ${res.status} (quá tải), thử lại lần ${attempt}...`);
-          await new Promise((r) => setTimeout(r, 1000 * attempt));
-          continue;
-        }
-        this.logger.error(`Gemini lỗi ${res.status}: ${JSON.stringify(data?.error ?? data)}`);
-        break;
-      }
-
-      if (!ok) {
-        return { intent: 'unclear', reply: lang === 'en' ? 'The AI Assistant is busy, please try again in a few seconds.' : 'Trợ lý AI đang quá tải, bạn thử lại sau vài giây nhé.' };
-      }
-
-      const raw: string | undefined = data?.candidates?.[0]?.content?.parts?.[0]?.text;
-      if (!raw) return { intent: 'unclear', reply: lang === 'en' ? "Sorry, I didn't understand that." : 'Xin lỗi, mình chưa hiểu ý bạn.' };
+      const raw = await this.callGemini(apiKey, `${systemPrompt}\n\n${historyBlock}Câu người dùng: "${userText}"`);
+      if (!raw) return { intent: 'unclear', reply: lang === 'en' ? 'The AI Assistant is busy, please try again in a few seconds.' : 'Trợ lý AI đang quá tải, bạn thử lại sau vài giây nhé.' };
 
       const parsed = JSON.parse(raw) as AiParseResult;
       if (!parsed?.intent) return { intent: 'unclear', reply: parsed?.reply || (lang === 'en' ? "Sorry, I didn't understand that." : 'Xin lỗi, mình chưa hiểu ý bạn.') };
@@ -238,5 +219,107 @@ Quy tắc QUAN TRỌNG:
       this.logger.error('Lỗi gọi/parse Gemini', e as Error);
       return { intent: 'unclear', reply: lang === 'en' ? 'Sorry, I could not process that. Try rephrasing.' : 'Xin lỗi, mình chưa xử lý được câu này. Thử diễn đạt khác nhé.' };
     }
+  }
+
+  /** Trích danh sách sự kiện từ 1 đoạn text (thường lấy từ file PDF do frontend đọc bằng pdfjs). */
+  async extractEventsFromText(userId: string, text: string): Promise<AiExtractResult> {
+    this.checkRateLimit(userId);
+
+    const settings = await this.settings.adminGetSettings(userId);
+    const ai = settings.ai_settings ?? {};
+    const lang: 'vi' | 'en' = settings.language === 'en' ? 'en' : 'vi';
+    if (ai.enabled === false) {
+      return {
+        events: [],
+        reply: lang === 'en' ? 'The AI Assistant is off. Enable it in Settings → AI Assistant.' : 'Trợ lý AI đang tắt. Bật lại trong Cài đặt → Trợ lý AI.',
+      };
+    }
+    if (ai.allow_create === false) {
+      return {
+        events: [],
+        reply: lang === 'en' ? 'You have turned off the AI permission to create events in Settings → AI Assistant.' : 'Bạn đã tắt quyền tạo sự kiện của AI trong Cài đặt → Trợ lý AI.',
+      };
+    }
+
+    const apiKey = this.config.get<string>('GEMINI_API_KEY');
+    if (!apiKey) {
+      return { events: [], reply: lang === 'en' ? 'The AI Assistant is not configured (missing GEMINI_API_KEY).' : 'Trợ lý AI chưa được cấu hình (thiếu GEMINI_API_KEY).' };
+    }
+
+    const now = new Date();
+    const prompt = `Bạn là trợ lý trích xuất sự kiện lịch từ văn bản. Bây giờ là ${now.toISOString()} (giờ Việt Nam UTC+7).
+Đoạn văn bản dưới đây được trích ra từ 1 file PDF (có thể là thời khoá biểu, lịch học, lịch làm việc, agenda, giấy mời...).
+Tìm TẤT CẢ sự kiện/buổi học/cuộc hẹn có ngày giờ rõ ràng (hoặc suy luận hợp lý được), trả về DUY NHẤT một JSON đúng schema, KHÔNG thêm chữ nào khác, KHÔNG markdown:
+{
+  "events": [
+    {
+      "title": "tên ngắn gọn",
+      "startTime": "ISO 8601 giờ bắt đầu",
+      "endTime": "ISO 8601 giờ kết thúc (suy luận +1 tiếng nếu văn bản không nêu rõ)",
+      "isAllDay": true hoặc false,
+      "location": "địa điểm nếu có, bỏ qua field này nếu không có",
+      "description": "mô tả thêm nếu có, bỏ qua field này nếu không có"
+    }
+  ],
+  "reply": "một câu ${lang === 'en' ? 'tiếng Anh' : 'tiếng Việt'} tóm tắt đã tìm thấy bao nhiêu sự kiện, hoặc giải thích nếu không tìm thấy gì"
+}
+Quy tắc QUAN TRỌNG:
+- Nếu văn bản là thời khoá biểu LẶP LẠI THEO TUẦN (vd "Thứ 2: Toán 7h-9h") mà KHÔNG nêu ngày/khoảng thời gian cụ thể, chỉ tạo 1 sự kiện cho mỗi buổi trong TUẦN GẦN NHẤT kể từ bây giờ — KHÔNG tự lặp lại nhiều tuần.
+- KHÔNG bịa thông tin không có trong văn bản. Nếu không chắc chắn về ngày giờ của 1 mục -> bỏ qua mục đó thay vì đoán bừa.
+- Nếu không tìm thấy sự kiện nào có thời gian rõ ràng -> "events": [] và giải thích lý do trong "reply".
+- Tối đa 200 sự kiện.
+- Trường "reply" PHẢI viết bằng ${lang === 'en' ? 'TIẾNG ANH (English)' : 'TIẾNG VIỆT'}.
+
+Văn bản:
+"""
+${text}
+"""`;
+
+    try {
+      const raw = await this.callGemini(apiKey, prompt);
+      if (!raw) return { events: [], reply: lang === 'en' ? 'The AI Assistant is busy, please try again in a few seconds.' : 'Trợ lý AI đang quá tải, bạn thử lại sau vài giây nhé.' };
+
+      const parsed = JSON.parse(raw) as AiExtractResult;
+      if (!Array.isArray(parsed?.events)) {
+        return { events: [], reply: parsed?.reply || (lang === 'en' ? 'Could not find any events in this file.' : 'Không tìm thấy sự kiện nào trong file này.') };
+      }
+      return parsed;
+    } catch (e) {
+      this.logger.error('Lỗi gọi/parse Gemini (extract-events)', e as Error);
+      return { events: [], reply: lang === 'en' ? 'Sorry, I could not process this file. Try again.' : 'Xin lỗi, mình chưa xử lý được file này. Thử lại nhé.' };
+    }
+  }
+
+  /** Gọi Gemini generateContent với retry (503/429 quá tải -> thử lại tối đa 3 lần). Trả về text JSON thô, hoặc null nếu thất bại. */
+  private async callGemini(apiKey: string, prompt: string): Promise<string | null> {
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${this.MODEL}:generateContent`;
+    const reqBody = JSON.stringify({
+      contents: [{ parts: [{ text: prompt }] }],
+      generationConfig: { responseMimeType: 'application/json', temperature: 0.2 },
+    });
+
+    let data: any;
+    let ok = false;
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey },
+        body: reqBody,
+      });
+      data = await res.json();
+      if (res.ok) {
+        ok = true;
+        break;
+      }
+      if ((res.status === 503 || res.status === 429) && attempt < 3) {
+        this.logger.warn(`Gemini ${res.status} (quá tải), thử lại lần ${attempt}...`);
+        await new Promise((r) => setTimeout(r, 1000 * attempt));
+        continue;
+      }
+      this.logger.error(`Gemini lỗi ${res.status}: ${JSON.stringify(data?.error ?? data)}`);
+      break;
+    }
+    if (!ok) return null;
+    return data?.candidates?.[0]?.content?.parts?.[0]?.text ?? null;
   }
 }
