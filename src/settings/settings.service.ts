@@ -61,6 +61,44 @@ export class SettingsService {
 
   constructor(private readonly supabaseService: SupabaseService) {}
 
+  /**
+   * Hàng đợi lưu-tuần-tự theo TỪNG user — chặn race condition đọc-rồi-ghi (read-then-write)
+   * khi 2 yêu cầu lưu cài đặt (vd bấm liên tiếp 2 ô tick "Quyền của AI") tới gần nhau: nếu
+   * chạy song song, yêu cầu sau có thể đọc dữ liệu CŨ (chưa thấy yêu cầu trước vừa ghi xong)
+   * rồi ghi đè lên, làm MẤT thay đổi của yêu cầu trước — kể cả field không liên quan (mất
+   * luôn "enabled"). Xếp hàng theo userId đảm bảo yêu cầu sau luôn đọc ĐÚNG dữ liệu mới nhất
+   * do yêu cầu trước đã ghi xong, không cần đụng gì tới database (chỉ trong bộ nhớ Node —
+   * đủ dùng vì backend chạy 1 tiến trình, chưa scale ngang nhiều instance).
+   */
+  private readonly saveQueues = new Map<string, Promise<unknown>>();
+  private runExclusive<T>(userId: string, fn: () => Promise<T>): Promise<T> {
+    const prev = this.saveQueues.get(userId) ?? Promise.resolve();
+    const run = prev.catch(() => {}).then(fn);
+    this.saveQueues.set(userId, run);
+    run.finally(() => {
+      if (this.saveQueues.get(userId) === run) this.saveQueues.delete(userId);
+    });
+    return run;
+  }
+
+  /**
+   * Lấp đầy các khóa CON còn thiếu trong email_preferences/ai_settings bằng mặc định.
+   *
+   * Trước đây chỉ fallback về DEFAULTS khi cả cột hoàn toàn null/undefined — nếu DB đã có
+   * sẵn object nhưng THIẾU vài khóa con (vd ai_settings chỉ có {enabled:true}, thiếu
+   * allow_search/create/update/delete — dễ xảy ra nếu hàng được tạo trước khi thêm field
+   * mới, hoặc 1 lần PATCH cũ lỡ ghi thiếu), các khóa thiếu đó bị lưu là "undefined" mãi
+   * mãi thay vì tự lấp lại mặc định, khiến UI hiện checkbox tắt sai (dù DB "chưa từng nói
+   * tắt", chỉ đơn giản là thiếu dữ liệu).
+   */
+  private withDefaults<T extends { email_preferences?: any; ai_settings?: any }>(row: T): T {
+    return {
+      ...row,
+      email_preferences: { ...DEFAULTS.email_preferences, ...(row.email_preferences ?? {}) },
+      ai_settings: { ...DEFAULTS.ai_settings, ...(row.ai_settings ?? {}) },
+    };
+  }
+
   /** Lấy settings của user; nếu chưa có -> tạo hàng mặc định rồi trả về. */
   async getSettings(supabase: SupabaseClient, userId: string) {
     const { data, error } = await supabase
@@ -70,7 +108,7 @@ export class SettingsService {
       .maybeSingle();
 
     if (error) throw new BadRequestException(error.message);
-    if (data) return data;
+    if (data) return this.withDefaults(data);
 
     // Chưa có -> tạo mặc định (RLS with_check đảm bảo user_id = auth.uid())
     const { data: created, error: insertError } = await supabase
@@ -80,7 +118,7 @@ export class SettingsService {
       .single();
 
     if (insertError) throw new BadRequestException(insertError.message);
-    return created;
+    return this.withDefaults(created);
   }
 
   /** Cập nhật settings (merge JSON, validate timezone + quyền calendar). */
@@ -89,9 +127,6 @@ export class SettingsService {
     userId: string,
     dto: UpdateSettingsDto,
   ) {
-    // Đảm bảo đã có hàng
-    const current = await this.getSettings(supabase, userId);
-
     if (dto.timezone !== undefined && !this.isValidTimezone(dto.timezone)) {
       throw new BadRequestException(`Timezone không hợp lệ: ${dto.timezone}`);
     }
@@ -108,44 +143,54 @@ export class SettingsService {
       await this.assertCalendarOwned(supabase, dto.default_calendar_id);
     }
 
-    // Gom các cột scalar cần update
-    const patch: Record<string, any> = {};
-    const scalarKeys: (keyof UpdateSettingsDto)[] = [
-      'language', 'timezone', 'date_format', 'time_format', 'start_of_week',
-      'default_calendar_view', 'default_calendar_id', 'working_days',
-      'working_start', 'working_end', 'show_weekends', 'show_declined_events',
-      'show_completed_tasks', 'show_current_time', 'time_slot_duration',
-      'theme', 'default_reminder', 'browser_notifications', 'event_default_privacy',
-    ];
-    for (const key of scalarKeys) {
-      if (dto[key] !== undefined) patch[key] = dto[key];
-    }
+    // Toàn bộ đọc-gộp-ghi xếp HÀNG ĐỢI theo user (runExclusive) -> yêu cầu sau luôn đọc đúng
+    // dữ liệu do yêu cầu trước đã ghi xong, không còn ghi đè mất field do chạy chồng nhau.
+    return this.runExclusive(userId, async () => {
+      const current = await this.getSettings(supabase, userId);
 
-    // Merge JSON (không ghi đè toàn bộ — chỉ đổi key được gửi)
-    if (dto.email_preferences !== undefined) {
-      patch.email_preferences = {
-        ...(current.email_preferences ?? DEFAULTS.email_preferences),
-        ...dto.email_preferences,
-      };
-    }
-    if (dto.ai_settings !== undefined) {
-      patch.ai_settings = {
-        ...(current.ai_settings ?? DEFAULTS.ai_settings),
-        ...dto.ai_settings,
-      };
-    }
+      // Gom các cột scalar cần update
+      const patch: Record<string, any> = {};
+      const scalarKeys: (keyof UpdateSettingsDto)[] = [
+        'language', 'timezone', 'date_format', 'time_format', 'start_of_week',
+        'default_calendar_view', 'default_calendar_id', 'working_days',
+        'working_start', 'working_end', 'show_weekends', 'show_declined_events',
+        'show_completed_tasks', 'show_current_time', 'time_slot_duration',
+        'theme', 'default_reminder', 'browser_notifications', 'event_default_privacy',
+      ];
+      for (const key of scalarKeys) {
+        if (dto[key] !== undefined) patch[key] = dto[key];
+      }
 
-    if (Object.keys(patch).length === 0) return current;
+      // Merge JSON (không ghi đè toàn bộ — chỉ đổi key được gửi). Xếp DEFAULTS trước current
+      // để khóa con nào current LỠ THIẾU (dữ liệu cũ/thiếu, không phải user chủ ý tắt) vẫn có
+      // giá trị mặc định hợp lý thay vì lưu "undefined" mãi mãi.
+      if (dto.email_preferences !== undefined) {
+        patch.email_preferences = {
+          ...DEFAULTS.email_preferences,
+          ...(current.email_preferences ?? {}),
+          ...dto.email_preferences,
+        };
+      }
+      if (dto.ai_settings !== undefined) {
+        patch.ai_settings = {
+          ...DEFAULTS.ai_settings,
+          ...(current.ai_settings ?? {}),
+          ...dto.ai_settings,
+        };
+      }
 
-    const { data, error } = await supabase
-      .from('user_settings')
-      .update(patch)
-      .eq('user_id', userId)
-      .select('*')
-      .single();
+      if (Object.keys(patch).length === 0) return current;
 
-    if (error) throw new BadRequestException(error.message);
-    return data;
+      const { data, error } = await supabase
+        .from('user_settings')
+        .update(patch)
+        .eq('user_id', userId)
+        .select('*')
+        .single();
+
+      if (error) throw new BadRequestException(error.message);
+      return this.withDefaults(data);
+    });
   }
 
   /**
@@ -163,7 +208,7 @@ export class SettingsService {
       this.logger.warn(`adminGetSettings lỗi cho ${userId}: ${error.message}`);
       return { user_id: userId, ...DEFAULTS };
     }
-    return data ?? { user_id: userId, ...DEFAULTS };
+    return data ? this.withDefaults(data) : { user_id: userId, ...DEFAULTS };
   }
 
   /** true nếu 1 loại email đang được BẬT cho user (mặc định bật nếu thiếu). */
