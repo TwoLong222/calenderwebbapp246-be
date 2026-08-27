@@ -374,7 +374,7 @@ describe('GroupsService', () => {
       const builder = makeBuilder({ data: saved, error: null });
       userFrom.mockReturnValueOnce(builder);
 
-      const result = await service.sendMessage(userClient(), 'grp-1', 'user-1', 'a@b.com', 'Chào cả nhóm');
+      const result = await service.sendMessage(userClient(), 'grp-1', 'user-1', 'a@b.com', { content: 'Chào cả nhóm' });
 
       expect(userFrom).toHaveBeenCalledWith('group_messages');
       expect(builder.insert).toHaveBeenCalledWith({
@@ -391,7 +391,7 @@ describe('GroupsService', () => {
       userFrom.mockReturnValueOnce(makeBuilder({ data: null, error: dbErr }));
 
       await expect(
-        service.sendMessage(userClient(), 'grp-1', 'stranger-1', 'x@y.com', 'xin chào'),
+        service.sendMessage(userClient(), 'grp-1', 'stranger-1', 'x@y.com', { content: 'xin chào' }),
       ).rejects.toThrow(dbErr);
     });
   });

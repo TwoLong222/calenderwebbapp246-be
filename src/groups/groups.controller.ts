@@ -184,7 +184,7 @@ export class GroupsController {
 
   @Post(':id/messages')
   async sendMessage(@Req() req: any, @CurrentUser() user: User, @Param('id') id: string, @Body() dto: SendMessageDto) {
-    const message = await this.groups.sendMessage(req.supabase, id, user.id, user.email ?? '', dto.content);
+    const message = await this.groups.sendMessage(req.supabase, id, user.id, user.email ?? '', dto);
     this.gateway.emitMessage(id, message);
     return message;
   }

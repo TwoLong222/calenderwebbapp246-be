@@ -7,6 +7,7 @@ import { ForbiddenException, Injectable, NotFoundException } from '@nestjs/commo
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { SupabaseService } from '../supabase/supabase.service';
 import { CreateGroupEventDto, UpdateGroupEventDto } from './dto/group-event.dto';
+import { SendMessageDto } from './dto/send-message.dto';
 
 @Injectable()
 export class GroupsService {
@@ -371,10 +372,35 @@ export class GroupsService {
   }
 
   /** Gửi 1 tin nhắn vào nhóm. RLS (group_messages) tự chặn nếu user không phải thành viên đã tham gia. */
-  async sendMessage(supabase: SupabaseClient, groupId: string, userId: string, userEmail: string, content: string) {
+  async sendMessage(
+    supabase: SupabaseClient,
+    groupId: string,
+    userId: string,
+    userEmail: string,
+    dto: SendMessageDto,
+  ) {
+    // Tin trả lời phải trỏ tới tin CÙNG NHÓM — nếu không thì bỏ qua phần trích dẫn thay vì
+    // để lọt id của nhóm khác (rò rỉ nội dung nhóm mình không thuộc về).
+    let replyToId: string | null = null;
+    if (dto.replyToId) {
+      const { data: parent } = await supabase
+        .from('group_messages')
+        .select('id')
+        .eq('id', dto.replyToId)
+        .eq('group_id', groupId)
+        .maybeSingle();
+      replyToId = parent?.id ?? null;
+    }
+
     const { data, error } = await supabase
       .from('group_messages')
-      .insert({ group_id: groupId, sender_id: userId, sender_email: userEmail || null, content })
+      .insert({
+        group_id: groupId,
+        sender_id: userId,
+        sender_email: userEmail || null,
+        content: dto.content,
+        reply_to_id: replyToId,
+      })
       .select('*')
       .single();
     if (error) throw error;

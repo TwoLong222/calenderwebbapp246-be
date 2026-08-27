@@ -144,7 +144,7 @@ export class GroupRealtimeGateway implements OnGatewayConnection, OnGatewayDisco
 
     try {
       const userClient = this.supabaseService.getClientForUser(token);
-      const message = await this.groupsService.sendMessage(userClient, groupId, user.id, user.email, content);
+      const message = await this.groupsService.sendMessage(userClient, groupId, user.id, user.email, { content });
       this.server?.to(groupId).emit('group-message:new', message);
     } catch {
       client.emit('group-message:error', { groupId, message: 'Không gửi được tin nhắn.' });

@@ -10,7 +10,7 @@
 // getPrimaryCalendarId() thành nhận calendarId từ request thay vì tự suy ra —
 // không cần sửa logic RLS vì đã được thiết kế sẵn từ đầu.
 
-import { ForbiddenException, Injectable, Logger } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { randomUUID } from 'crypto';
 import type { SupabaseClient } from '@supabase/supabase-js';
@@ -629,8 +629,23 @@ export class EventsService {
     return { event: { ...event, attendees, reminders: rems ?? [] }, conflicts };
   }
 
-  /** XÓA MỀM: đưa vào thùng rác (đặt deleted_at = now). Không mất dữ liệu, có thể khôi phục. */
-  async deleteEvent(supabase: SupabaseClient, id: string, scope: 'single' | 'series' = 'single') {
+  /**
+   * XÓA MỀM: đưa vào thùng rác (đặt deleted_at = now). Không mất dữ liệu, có thể khôi phục.
+   *
+   * scope:
+   *  - 'single' (mặc định): chỉ đúng sự kiện này.
+   *  - 'series': mọi mắt cùng series_id.
+   *  - 'range' : các mắt cùng series_id có ngày bắt đầu nằm TRONG khoảng [from, to].
+   *              from/to là ngày dạng 'YYYY-MM-DD'; to được lấy trọn ngày (tới 23:59:59.999).
+   *  - 'from'  : NGẮT LẶP — xoá mọi mắt từ ngày `from` TRỞ ĐI, các mắt trước đó giữ nguyên.
+   *              Khác 'range' ở chỗ không cần biết ngày kết thúc của chuỗi.
+   */
+  async deleteEvent(
+    supabase: SupabaseClient,
+    id: string,
+    scope: 'single' | 'series' | 'range' | 'from' = 'single',
+    range?: { from: string; to?: string },
+  ) {
     const deletedAt = new Date().toISOString();
     // Lấy thông tin sự kiện + khách mời TRƯỚC khi xóa mềm để còn gửi email huỷ.
     const { data: ev } = await supabase
@@ -650,6 +665,39 @@ export class EventsService {
       void this.notifyCancelled(attendees, ev);
       return { seriesId: ev.series_id };
     }
+
+    // Xoá các mắt của chuỗi: theo khoảng ngày ('range') hoặc từ 1 ngày trở đi ('from').
+    if ((scope === 'range' || scope === 'from') && ev?.series_id && range) {
+      // Dựng mốc theo giờ ĐỊA PHƯƠNG của server rồi đổi sang ISO, để 'to' bao trọn cả ngày.
+      const fromTs = new Date(`${range.from}T00:00:00`);
+      if (isNaN(fromTs.getTime())) {
+        throw new BadRequestException('Ngày bắt đầu không hợp lệ');
+      }
+
+      let q = supabase
+        .from('events')
+        .update({ deleted_at: deletedAt })
+        .eq('series_id', ev.series_id)
+        .gte('start_time', fromTs.toISOString());
+
+      // 'from' = ngắt lặp -> không chặn đầu trên, mọi mắt sau đó đều bị xoá.
+      if (scope === 'range') {
+        const toTs = new Date(`${range.to}T23:59:59.999`);
+        if (isNaN(toTs.getTime())) {
+          throw new BadRequestException('Ngày kết thúc không hợp lệ');
+        }
+        if (fromTs > toTs) {
+          throw new BadRequestException('Ngày bắt đầu phải trước hoặc bằng ngày kết thúc');
+        }
+        q = q.lte('start_time', toTs.toISOString());
+      }
+
+      const { data: removed, error } = await q.is('deleted_at', null).select('id');
+      if (error) throw error;
+      void this.notifyCancelled(attendees, ev);
+      return { seriesId: ev.series_id, deletedCount: removed?.length ?? 0 };
+    }
+
     // Mặc định: chỉ đưa 1 event vào thùng rác
     const { error } = await supabase.from('events').update({ deleted_at: deletedAt }).eq('id', id);
     if (error) throw error;

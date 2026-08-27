@@ -59,7 +59,21 @@ export class EventsController {
   }
 
   @Delete(':id')
-  remove(@Req() req: any, @Param('id') id: string, @Query('scope') scope?: string) {
+  remove(
+    @Req() req: any,
+    @Param('id') id: string,
+    @Query('scope') scope?: string,
+    @Query('from') from?: string,
+    @Query('to') to?: string,
+  ) {
+    // 'range' cần đủ cả from lẫn to, nếu thiếu thì lùi về xoá đúng 1 sự kiện cho an toàn.
+    if (scope === 'range' && from && to) {
+      return this.eventsService.deleteEvent(req.supabase, id, 'range', { from, to });
+    }
+    // 'from' = ngắt lặp: chỉ cần ngày bắt đầu, xoá mọi mắt từ đó trở đi.
+    if (scope === 'from' && from) {
+      return this.eventsService.deleteEvent(req.supabase, id, 'from', { from });
+    }
     return this.eventsService.deleteEvent(req.supabase, id, scope === 'series' ? 'series' : 'single');
   }
 
