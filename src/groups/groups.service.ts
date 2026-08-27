@@ -184,6 +184,27 @@ export class GroupsService {
     return { ok: true };
   }
 
+  /**
+   * TỰ RỜI nhóm — khác removeMember (chỉ chủ nhóm gọi được, dùng để đá người khác).
+   * Chủ nhóm KHÔNG rời được: rời đi thì nhóm mất chủ, muốn dứt thì phải "giải tán nhóm".
+   */
+  async leaveGroup(userId: string, groupId: string) {
+    const { data: group } = await this.admin.from('groups').select('owner_id').eq('id', groupId).maybeSingle();
+    if (!group) throw new NotFoundException('Không tìm thấy nhóm.');
+    if (group.owner_id === userId) {
+      throw new ForbiddenException('Bạn là chủ nhóm — hãy giải tán nhóm thay vì rời đi.');
+    }
+    const { data, error } = await this.admin
+      .from('group_members')
+      .delete()
+      .eq('group_id', groupId)
+      .eq('user_id', userId)
+      .select('group_id');
+    if (error) throw error;
+    if (!data?.length) throw new NotFoundException('Bạn không thuộc nhóm này.');
+    return { ok: true };
+  }
+
   /** Chủ nhóm xóa 1 thành viên (không xóa được chính chủ nhóm). */
   async removeMember(supabase: SupabaseClient, userId: string, groupId: string, email: string) {
     await this.assertOwner(supabase, userId, groupId);

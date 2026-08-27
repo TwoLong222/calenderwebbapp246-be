@@ -8,6 +8,10 @@ import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { SettingsService } from '../settings/settings.service';
 
+/** Chờ tối đa bao lâu cho MỘT model trước khi bỏ qua, sang model kế tiếp (ms).
+ *  12s: model chạy tốt chỉ mất ~3s, nên quá mốc này coi như model đó có vấn đề. */
+const MODEL_TIMEOUT_MS = 12000;
+
 export interface AiParseResult {
   intent:
     | 'create_event'
@@ -26,6 +30,19 @@ export interface AiParseResult {
     | 'create_group_event'
     | 'change_setting'
     | 'export_calendar'
+    // ----- Mở rộng: sự kiện lặp -----
+    | 'stop_repeat' // ngắt lặp từ 1 ngày trở đi
+    | 'delete_repeat_range' // xoá các lần lặp trong 1 khoảng ngày
+    // ----- Mở rộng: lời mời + thùng rác -----
+    | 'respond_invite' // đồng ý/từ chối lời mời SỰ KIỆN
+    | 'respond_group_invite' // đồng ý/từ chối lời mời NHÓM
+    | 'restore_event' // khôi phục sự kiện từ thùng rác
+    // ----- Mở rộng: nhóm nâng cao + chat -----
+    | 'leave_group'
+    | 'delete_group'
+    | 'remove_group_member'
+    | 'mute_group'
+    | 'send_group_message'
     | 'unclear';
   // create_event
   title?: string;
@@ -63,13 +80,50 @@ export interface AiParseResult {
   groupCode?: string;
   // invite_group_member / create_group_event: tên nhóm cần thao tác
   groupQuery?: string;
-  // change_setting: 'theme_mode' | 'language' | 'accent_color'
-  settingKey?: 'theme_mode' | 'language' | 'accent_color';
-  // change_setting: giá trị tương ứng — theme_mode: 'light'|'dark'|'system', language: 'vi'|'en',
-  // accent_color: 1 trong các preset (navy/blue/indigo/violet/emerald/teal/rose/red/orange)
+  // change_setting: khoá cài đặt được phép đổi bằng lời.
+  settingKey?:
+    | 'theme_mode'
+    | 'language'
+    | 'accent_color'
+    | 'timezone'
+    | 'week_starts_on'
+    | 'time_format'
+    | 'default_reminder'
+    | 'browser_notifications'
+    | 'show_weekends'
+    | 'show_declined_events'
+    | 'show_completed_tasks'
+    | 'show_current_time'
+    | 'default_view';
+  // change_setting: giá trị tương ứng — xem mô tả chi tiết trong prompt.
   settingValue?: string;
   // export_calendar: 'pdf' | 'ics'
   exportFormat?: 'pdf' | 'ics';
+
+  // ----- Sự kiện lặp -----
+  // stop_repeat / delete_repeat_range: ngày (YYYY-MM-DD) mốc bắt đầu, và mốc kết thúc cho range.
+  repeatFrom?: string;
+  repeatTo?: string;
+  // create_event: luật lặp — để trống nghĩa là không lặp.
+  recurrenceFreq?: 'daily' | 'weekly' | 'monthly' | 'yearly';
+  /** Lặp mỗi mấy đơn vị (mặc định 1). */
+  recurrenceInterval?: number;
+  /** Kết thúc sau bao nhiêu lần (ưu tiên nếu có cả until). */
+  recurrenceCount?: number;
+  /** Lặp tới ngày nào (YYYY-MM-DD). */
+  recurrenceUntil?: string;
+
+  // ----- Lời mời -----
+  // respond_invite / respond_group_invite: 'accepted' | 'declined' | 'tentative'
+  rsvpStatus?: 'accepted' | 'declined' | 'tentative';
+
+  // ----- Nhóm nâng cao -----
+  /** remove_group_member: email thành viên cần xoá. */
+  memberEmail?: string;
+  /** mute_group: true = tắt thông báo, false = bật lại. */
+  muted?: boolean;
+  /** send_group_message: nội dung tin nhắn cần gửi. */
+  messageText?: string;
   reply: string; // câu phản hồi cho người dùng
 }
 
@@ -90,9 +144,24 @@ export interface AiExtractResult {
 @Injectable()
 export class AiService {
   private readonly logger = new Logger(AiService.name);
-  /** Model Gemini — chỉnh được qua .env GEMINI_MODEL. Mặc định giữ model đang chạy tốt trên key hiện tại. */
-  private get MODEL(): string {
-    return this.config.get<string>('GEMINI_MODEL') ?? 'gemini-3.6-flash';
+  /**
+   * Danh sách model Gemini, ưu tiên từ trái sang phải. Đặt trong .env GEMINI_MODEL,
+   * NHIỀU model thì ngăn bằng dấu phẩy:
+   *
+   *   GEMINI_MODEL=gemini-3.6-flash,gemini-3.7-flash,gemini-3.1-flash-lite
+   *
+   * Vì sao cần nhiều: gói miễn phí giới hạn theo TỪNG MODEL trong TỪNG PROJECT
+   * (quotaId GenerateRequestsPerDayPerProjectPerModel, 20 lượt/ngày). Model đầu hết lượt
+   * thì tự nhảy sang model kế tiếp -> tổng số lượt mỗi ngày nhân lên theo số model.
+   * Tạo thêm API key KHÔNG giúp gì vì các key cùng project dùng chung hạn mức.
+   */
+  private get MODELS(): string[] {
+    const raw = this.config.get<string>('GEMINI_MODEL') ?? 'gemini-3.6-flash';
+    const list = raw
+      .split(',')
+      .map((m) => m.trim())
+      .filter(Boolean);
+    return list.length > 0 ? list : ['gemini-3.6-flash'];
   }
 
   // Rate-limit đơn giản trong bộ nhớ: tối đa 20 request / user / giờ
@@ -134,9 +203,23 @@ export class AiService {
       case 'complete_task':
       case 'invite_group_member':
       case 'join_group':
+      // Trả lời lời mời, khôi phục từ thùng rác, tắt/bật thông báo nhóm, gửi tin nhắn:
+      // đều là THAY ĐỔI dữ liệu chứ không xoá -> gom vào quyền "cập nhật".
+      case 'respond_invite':
+      case 'respond_group_invite':
+      case 'restore_event':
+      case 'mute_group':
+      case 'send_group_message':
         return ai?.allow_update === false ? denied(labels.update) : result;
       case 'delete_event':
       case 'delete_note':
+      // Ngắt lặp / xoá khoảng lặp / rời nhóm / giải tán nhóm / xoá thành viên đều LÀM MẤT
+      // dữ liệu -> phải theo quyền "xoá", không được xếp vào quyền cập nhật.
+      case 'stop_repeat':
+      case 'delete_repeat_range':
+      case 'leave_group':
+      case 'delete_group':
+      case 'remove_group_member':
         return ai?.allow_delete === false ? denied(labels.delete) : result;
       case 'invite_guest':
         // Thêm khách = sửa sự kiện -> theo quyền cập nhật.
@@ -191,7 +274,7 @@ export class AiService {
     const systemPrompt = `Bạn là trợ lý ĐIỀU KHIỂN app Lịch này bằng tiếng Việt. Bây giờ là ${now.toISOString()} (giờ Việt Nam UTC+7).
 Người dùng nói 1 câu để thao tác app. Xác định Ý ĐỊNH và trả về DUY NHẤT một JSON đúng schema, KHÔNG thêm chữ nào khác, KHÔNG markdown:
 {
-  "intent": "create_event" | "plan_schedule" | "search_events" | "reschedule_event" | "delete_event" | "invite_guest" | "complete_task" | "create_note" | "search_notes" | "delete_note" | "create_group" | "join_group" | "invite_group_member" | "create_group_event" | "change_setting" | "export_calendar" | "unclear",
+  "intent": "create_event" | "plan_schedule" | "search_events" | "reschedule_event" | "delete_event" | "invite_guest" | "complete_task" | "create_note" | "search_notes" | "delete_note" | "create_group" | "join_group" | "invite_group_member" | "create_group_event" | "change_setting" | "export_calendar" | "stop_repeat" | "delete_repeat_range" | "respond_invite" | "respond_group_invite" | "restore_event" | "leave_group" | "delete_group" | "remove_group_member" | "mute_group" | "send_group_message" | "unclear",
   "count": "plan_schedule only: number of sessions, default 1",
   "durationMinutes": "plan_schedule only: minutes per session, default 60",
   "planStart": "plan_schedule only: ISO start of planning window",
@@ -217,9 +300,19 @@ Người dùng nói 1 câu để thao tác app. Xác định Ý ĐỊNH và tr�
   "groupName": "create_group only: tên nhóm mới",
   "groupCode": "join_group only: mã mời của nhóm cần tham gia",
   "groupQuery": "invite_group_member/create_group_event: từ khóa TÊN nhóm cần thao tác",
-  "settingKey": "change_setting only: 'theme_mode' | 'language' | 'accent_color'",
+  "settingKey": "change_setting only: theme_mode|language|accent_color|timezone|week_starts_on|time_format|default_reminder|browser_notifications|show_weekends|show_declined_events|show_completed_tasks|show_current_time|default_view",
   "settingValue": "change_setting only: theme_mode='light'|'dark'|'system', language='vi'|'en', accent_color=1 trong navy/blue/indigo/violet/emerald/teal/rose/red/orange",
   "exportFormat": "export_calendar only: 'pdf' | 'ics'",
+  "repeatFrom": "stop_repeat / delete_repeat_range: ngày mốc bắt đầu, dạng YYYY-MM-DD",
+  "repeatTo": "delete_repeat_range only: ngày mốc kết thúc, dạng YYYY-MM-DD",
+  "recurrenceFreq": "create_event only: 'daily'|'weekly'|'monthly'|'yearly' — bỏ trống nếu KHÔNG lặp",
+  "recurrenceInterval": "create_event only: lặp mỗi mấy đơn vị, mặc định 1",
+  "recurrenceCount": "create_event only: kết thúc sau bao nhiêu lần",
+  "recurrenceUntil": "create_event only: lặp tới ngày nào, dạng YYYY-MM-DD",
+  "rsvpStatus": "respond_invite / respond_group_invite: 'accepted' | 'declined' | 'tentative'",
+  "memberEmail": "remove_group_member only: email thành viên cần xoá",
+  "muted": "mute_group only: true = tắt thông báo nhóm, false = bật lại",
+  "messageText": "send_group_message only: nội dung tin nhắn cần gửi",
   "reply": "một câu tiếng Việt ngắn. Với các hành động TẠO/SỬA/XÓA: mô tả điều SẼ làm — KHÔNG nói 'đã ...' vì cần bấm Xác nhận"
 }
 Ví dụ ý định:
@@ -266,6 +359,34 @@ Quy tắc QUAN TRỌNG:
   (không có trong danh sách) -> "unclear", giải thích app chưa hỗ trợ đổi cài đặt đó qua lời nói.
 - export_calendar: chỉ 2 định dạng "pdf"/"ics" — không nói rõ định dạng nào thì hỏi lại. Đây là thao tác
   KHÔNG phá huỷ (chỉ tải file về máy) nên "reply" có thể nói "Đang xuất..." (không cần né chữ "đã").
+- SỰ KIỆN LẶP:
+  • "họp mỗi thứ 2 lúc 9h" / "nhắc uống thuốc hằng ngày 8h" -> create_event kèm recurrenceFreq
+    (weekly/daily...). "trong 10 tuần" -> recurrenceCount=10; "tới 31/12" -> recurrenceUntil.
+  • "ngừng lặp <tên> từ ngày X" / "từ X trở đi đừng lặp nữa" -> stop_repeat (query=tên, repeatFrom=X).
+  • "xoá <tên> từ ngày X đến ngày Y" -> delete_repeat_range (query, repeatFrom, repeatTo).
+  • Thiếu ngày mốc -> "unclear" hỏi rõ từ ngày nào.
+- LỜI MỜI:
+  • "đồng ý lời mời <tên sự kiện>" / "từ chối họp X" -> respond_invite (query, rsvpStatus).
+  • "đồng ý vào nhóm X" / "từ chối lời mời nhóm X" -> respond_group_invite (groupQuery, rsvpStatus).
+  • Không nói rõ đồng ý hay từ chối -> "unclear" hỏi lại.
+- THÙNG RÁC: "khôi phục <tên>" / "lấy lại sự kiện <tên> vừa xoá" -> restore_event (query).
+- NHÓM NÂNG CAO:
+  • "rời nhóm X" -> leave_group (groupQuery).
+  • "giải tán nhóm X" / "xoá nhóm X" -> delete_group (groupQuery). ĐÂY LÀ THAO TÁC PHÁ HUỶ.
+  • "xoá <email> khỏi nhóm X" -> remove_group_member (groupQuery, memberEmail).
+  • "tắt thông báo nhóm X" -> mute_group (groupQuery, muted=true); "bật lại" -> muted=false.
+  • "nhắn vào nhóm X: <nội dung>" -> send_group_message (groupQuery, messageText).
+  • Thiếu tên nhóm -> "unclear" hỏi nhóm nào.
+- CÀI ĐẶT (change_setting) — giá trị hợp lệ theo từng khoá:
+  • theme_mode: light|dark|system   • language: vi|en
+  • accent_color: navy|blue|indigo|violet|emerald|teal|rose|red|orange
+  • timezone: tên IANA, vd "Asia/Ho_Chi_Minh"
+  • week_starts_on: 0 (Chủ nhật) | 1 (Thứ hai)
+  • time_format: 12|24            • default_view: day|week|month|year
+  • default_reminder: số PHÚT trước sự kiện, hoặc "none" để tắt
+  • browser_notifications / show_weekends / show_declined_events / show_completed_tasks /
+    show_current_time: true|false
+  Khoá KHÔNG nằm trong danh sách trên -> "unclear", nói app chưa hỗ trợ đổi cài đặt đó bằng lời.
 - Chỉ điền field liên quan tới intent. Không rõ ý -> "unclear" + hỏi lại.
 - CHÀO HỎI / NÓI CHUYỆN PHIẾM (vd "hi", "ok", "cảm ơn", "im", "ko cần"): intent="unclear",
   trả lời NGẮN GỌN, THÂN THIỆN, TỰ NHIÊN (đừng lặp y hệt mỗi lần) và LỒNG 1 ví dụ lệnh cụ thể
@@ -294,7 +415,7 @@ Quy tắc QUAN TRỌNG:
           : '';
 
       const raw = await this.callGemini(apiKey, `${systemPrompt}\n\n${historyBlock}Câu người dùng: "${userText}"`);
-      if (!raw) return { intent: 'unclear', reply: lang === 'en' ? 'The AI Assistant is busy, please try again in a few seconds.' : 'Trợ lý AI đang quá tải, bạn thử lại sau vài giây nhé.' };
+      if (!raw) return { intent: 'unclear', reply: this.failureMessage(lang) };
 
       const parsed = JSON.parse(raw) as AiParseResult;
       if (!parsed?.intent) return { intent: 'unclear', reply: parsed?.reply || (lang === 'en' ? "Sorry, I didn't understand that." : 'Xin lỗi, mình chưa hiểu ý bạn.') };
@@ -361,7 +482,7 @@ ${text}
 
     try {
       const raw = await this.callGemini(apiKey, prompt);
-      if (!raw) return { events: [], reply: lang === 'en' ? 'The AI Assistant is busy, please try again in a few seconds.' : 'Trợ lý AI đang quá tải, bạn thử lại sau vài giây nhé.' };
+      if (!raw) return { events: [], reply: this.failureMessage(lang) };
 
       const parsed = JSON.parse(raw) as AiExtractResult;
       if (!Array.isArray(parsed?.events)) {
@@ -374,36 +495,121 @@ ${text}
     }
   }
 
-  /** Gọi Gemini generateContent với retry (503/429 quá tải -> thử lại tối đa 3 lần). Trả về text JSON thô, hoặc null nếu thất bại. */
+  /**
+   * Lý do gọi Gemini thất bại — để báo cho người dùng ĐÚNG nguyên nhân thay vì
+   * gộp tất cả thành "đang quá tải" như trước (khiến người dùng tưởng lỗi tạm thời
+   * và đi đổi key một cách vô ích).
+   */
+  private lastFailure: 'quota' | 'busy' | 'config' | 'unknown' | null = null;
+
+  /** Câu thông báo tương ứng với lý do thất bại gần nhất. */
+  private failureMessage(lang: 'vi' | 'en'): string {
+    switch (this.lastFailure) {
+      case 'quota':
+        return lang === 'en'
+          ? "You've used up today's free AI quota. It resets tomorrow, or switch to another model in GEMINI_MODEL."
+          : 'Hết lượt dùng AI miễn phí hôm nay rồi. Hạn mức reset vào ngày mai, hoặc đổi model khác trong GEMINI_MODEL.';
+      case 'config':
+        return lang === 'en'
+          ? 'The AI key or model is misconfigured. Please check GEMINI_API_KEY / GEMINI_MODEL.'
+          : 'Cấu hình AI đang có vấn đề (sai key hoặc sai tên model). Kiểm tra lại GEMINI_API_KEY / GEMINI_MODEL nhé.';
+      case 'busy':
+        return lang === 'en'
+          ? 'The AI Assistant is busy, please try again in a few seconds.'
+          : 'Trợ lý AI đang quá tải, bạn thử lại sau vài giây nhé.';
+      default:
+        return lang === 'en'
+          ? 'Could not reach the AI service. Please try again.'
+          : 'Không gọi được dịch vụ AI. Bạn thử lại giúp mình nhé.';
+    }
+  }
+
+  /**
+   * Gọi Gemini generateContent. Trả về text JSON thô, hoặc null nếu thất bại
+   * (lý do lưu ở this.lastFailure).
+   *
+   * Retry CHỈ áp dụng cho lỗi tạm thời (503, hoặc 429 do vượt tần suất theo phút).
+   * 429 kèm RESOURCE_EXHAUSTED = hết hạn mức theo NGÀY -> thử lại bao nhiêu lần cũng vô
+   * ích (Google còn bảo chờ ~30s, trong khi ta chỉ chờ 1-2s), nên bỏ cuộc ngay.
+   */
   private async callGemini(apiKey: string, prompt: string): Promise<string | null> {
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/${this.MODEL}:generateContent`;
     const reqBody = JSON.stringify({
       contents: [{ parts: [{ text: prompt }] }],
       generationConfig: { responseMimeType: 'application/json', temperature: 0.2 },
     });
 
-    let data: any;
-    let ok = false;
+    const models = this.MODELS;
+    for (let i = 0; i < models.length; i++) {
+      const model = models[i];
+      const result = await this.callOneModel(apiKey, model, reqBody);
+      if (result !== null) {
+        this.lastFailure = null;
+        if (i > 0) this.logger.log(`Đã chuyển sang model dự phòng "${model}" (model trước hết lượt).`);
+        return result;
+      }
+      // Chỉ chuyển model khi HẾT HẠN MỨC hoặc model đó không dùng được (sai tên/bị gỡ).
+      // Lỗi tạm thời (busy) hay lỗi lạ thì đổi model cũng không giúp gì -> dừng luôn.
+      if (this.lastFailure !== 'quota' && this.lastFailure !== 'config') return null;
+      if (i < models.length - 1) {
+        this.logger.warn(`Model "${model}" không dùng được (${this.lastFailure}) — thử model kế tiếp...`);
+      }
+    }
+    // Hết sạch model trong danh sách: nếu cái cuối lỗi cấu hình thì vẫn báo hết hạn mức
+    // sẽ gây hiểu nhầm, nên giữ nguyên lý do của model cuối cùng.
+    return null;
+  }
+
+  /**
+   * Gọi ĐÚNG 1 model. Trả text hoặc null (lý do ở this.lastFailure).
+   * Retry 3 lần chỉ cho lỗi tạm thời (503 / 429 vượt tần suất theo phút).
+   */
+  private async callOneModel(apiKey: string, model: string, reqBody: string): Promise<string | null> {
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
     for (let attempt = 1; attempt <= 3; attempt++) {
-      const res = await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey },
-        body: reqBody,
-      });
-      data = await res.json();
-      if (res.ok) {
-        ok = true;
-        break;
+      let res: Response;
+      let data: any;
+      try {
+        // Chặn thời gian chờ: có model (vd gemini-3.7-flash) không phản hồi gì cả. Không đặt
+        // hạn thì mỗi câu hỏi đứng chờ hàng chục giây rồi mới chịu nhảy sang model kế tiếp.
+        res = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey },
+          body: reqBody,
+          signal: AbortSignal.timeout(MODEL_TIMEOUT_MS),
+        });
+        data = await res.json();
+      } catch (e) {
+        // Timeout / đứt mạng: KHÔNG để lỗi ném ra ngoài, vì như vậy vòng lặp chuyển model
+        // ở callGemini() bị hủy luôn — một model chậm sẽ chặn cả các model còn lại.
+        // Coi như model này không dùng được để còn thử model kế tiếp.
+        this.lastFailure = 'config';
+        this.logger.error(`Không gọi được model "${model}": ${(e as Error).message}`);
+        return null;
+      }
+      if (res.ok) return data?.candidates?.[0]?.content?.parts?.[0]?.text ?? null;
+
+      // Hết hạn mức theo NGÀY -> dừng ngay, không phí thêm 2 lượt gọi nữa.
+      if (res.status === 429 && data?.error?.status === 'RESOURCE_EXHAUSTED') {
+        this.lastFailure = 'quota';
+        this.logger.error(`Model "${model}" hết hạn mức ngày: ${data?.error?.message ?? ''}`);
+        return null;
       }
       if ((res.status === 503 || res.status === 429) && attempt < 3) {
-        this.logger.warn(`Gemini ${res.status} (quá tải), thử lại lần ${attempt}...`);
+        this.lastFailure = 'busy';
+        this.logger.warn(`Gemini ${res.status} (quá tải tạm thời) ở "${model}", thử lại lần ${attempt}...`);
         await new Promise((r) => setTimeout(r, 1000 * attempt));
         continue;
       }
-      this.logger.error(`Gemini lỗi ${res.status}: ${JSON.stringify(data?.error ?? data)}`);
-      break;
+      // 400 = sai tham số/tên model, 401/403 = key sai, 404 = model không tồn tại/bị gỡ.
+      this.lastFailure =
+        res.status === 400 || res.status === 401 || res.status === 403 || res.status === 404
+          ? 'config'
+          : res.status === 503 || res.status === 429
+            ? 'busy'
+            : 'unknown';
+      this.logger.error(`Gemini lỗi ${res.status} ở "${model}": ${JSON.stringify(data?.error ?? data)}`);
+      return null;
     }
-    if (!ok) return null;
-    return data?.candidates?.[0]?.content?.parts?.[0]?.text ?? null;
+    return null;
   }
 }

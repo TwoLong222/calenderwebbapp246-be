@@ -89,6 +89,15 @@ export class GroupsController {
     return res;
   }
 
+  /** Tự rời nhóm (khác /members — cái đó chỉ chủ nhóm dùng để đá người khác). */
+  @Delete(':id/leave')
+  async leave(@CurrentUser() user: User, @Param('id') id: string) {
+    const memberIds = await this.groups.listMemberUserIds(id);
+    const res = await this.groups.leaveGroup(user.id, id);
+    this.gateway.notifyGroupsChanged(memberIds); // gồm cả mình -> tab tự ẩn nhóm
+    return res;
+  }
+
   @Delete(':id/members')
   async removeMember(@Req() req: any, @CurrentUser() user: User, @Param('id') id: string, @Query('email') email: string) {
     const memberIds = await this.groups.listMemberUserIds(id);
