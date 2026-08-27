@@ -29,7 +29,15 @@ export class SupabaseService {
       );
     }
 
-    this.adminClient = createClient(url, serviceRoleKey);
+    // auth: { persistSession: false, autoRefreshToken: false } — adminClient chỉ dùng để
+    // xác thực JWT của người khác (auth.getUser(token)) và query nội bộ, KHÔNG có phiên
+    // đăng nhập của riêng nó. Để mặc định (persistSession: true) thì supabase-js cố khôi
+    // phục session từ storage lúc khởi động (không có storage nào trong Node) — có thể
+    // đua (race) với các request đến sớm ngay sau khi server start, khiến getUser(token)
+    // báo nhầm lỗi "Auth session missing!" dù token truyền vào hợp lệ.
+    this.adminClient = createClient(url, serviceRoleKey, {
+      auth: { persistSession: false, autoRefreshToken: false },
+    });
   }
 
   /** Trả về 1 Supabase client mới, gắn JWT của user hiện tại -> mọi query qua client này tuân theo RLS */
