@@ -7,6 +7,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { SettingsService } from '../settings/settings.service';
+import { getVietnamHolidays } from './holidays.util';
 
 export interface AiParseResult {
   intent:
@@ -188,7 +189,15 @@ export class AiService {
     }
 
     const now = new Date();
+    const holidaysBlock = [now.getFullYear(), now.getFullYear() + 1]
+      .flatMap((y) => getVietnamHolidays(y))
+      .map((h) => `${h.date} ${h.name}${h.isPublic ? ' (nghỉ chính thức)' : ''}`)
+      .join('\n');
     const systemPrompt = `Bạn là trợ lý ĐIỀU KHIỂN app Lịch này bằng tiếng Việt. Bây giờ là ${now.toISOString()} (giờ Việt Nam UTC+7).
+DANH SÁCH NGÀY LỄ VIỆT NAM (đã tính sẵn ngày dương lịch chính xác cho năm nay và năm sau — TRA trong bảng này khi
+người dùng nhắc TÊN 1 ngày lễ, TUYỆT ĐỐI không tự đoán/tự nhớ ngày, kể cả ngày lễ Âm lịch như Tết hay Giỗ Tổ vì
+mỗi năm rơi vào ngày dương khác nhau):
+${holidaysBlock}
 Người dùng nói 1 câu để thao tác app. Xác định Ý ĐỊNH và trả về DUY NHẤT một JSON đúng schema, KHÔNG thêm chữ nào khác, KHÔNG markdown:
 {
   "intent": "create_event" | "plan_schedule" | "search_events" | "reschedule_event" | "delete_event" | "invite_guest" | "complete_task" | "create_note" | "search_notes" | "delete_note" | "create_group" | "join_group" | "invite_group_member" | "create_group_event" | "change_setting" | "export_calendar" | "unclear",
@@ -228,6 +237,9 @@ Ví dụ ý định:
 - "thêm việc cần làm: nộp báo cáo trước 5h chiều mai" -> create_event (kind="task", title="Nộp báo cáo", startTime/endTime=5h chiều mai)
 - "tạo lịch hẹn khám răng 9h sáng thứ 5" -> create_event (kind="appointment")
 - "mai 3h họp nhóm 1 tiếng, mời an@gmail.com" -> create_event (title, startTime, endTime, guestEmails=["an@gmail.com"])
+- "tạo lịch về quê nghỉ lễ Quốc khánh" -> create_event, startTime lấy đúng ngày "Quốc khánh" tra trong DANH SÁCH NGÀY LỄ ở trên (không phải 30/4 hay ngày khác)
+- "mùng 1 Tết đi chúc Tết ông bà 9h sáng" -> create_event, ngày lấy từ mục "Tết Nguyên đán" trong danh sách (Âm lịch, đổi ra ngày dương đúng năm đó)
+- "có sự kiện gì vào Giỗ Tổ Hùng Vương năm nay không" -> search_events, range = đúng 1 ngày tra được trong danh sách
 - "tuần này có họp gì" -> search_events (query rỗng, range = tuần này)
 - "dời họp nhóm sang 4h chiều" -> reschedule_event (query="họp nhóm", newStartTime=...)
 - "xóa họp nhóm ngày mai" -> delete_event (query="họp nhóm")
@@ -250,6 +262,10 @@ Ví dụ ý định:
 - "xuất file ics" / "tải lịch dạng ics" -> export_calendar (exportFormat="ics")
 Quy tắc QUAN TRỌNG:
 - "mai"=ngày hôm sau, "thứ 4 tuần sau"... -> suy ra được NGÀY là ok.
+- NGÀY LỄ: khi câu nhắc tên 1 ngày lễ (vd "Quốc khánh", "Tết Nguyên đán", "mùng 1 Tết", "Giỗ Tổ Hùng Vương",
+  "Trung thu", "Giáng sinh"...), TRA ngày dương chính xác trong DANH SÁCH NGÀY LỄ ở trên — lấy lần xuất hiện GẦN
+  NHẤT tính từ bây giờ trở đi (trừ khi người dùng nói rõ mốc khác, vd "Tết năm ngoái"). Không thấy tên lễ nào
+  khớp trong danh sách -> "unclear" hỏi lại ngày cụ thể, KHÔNG tự đoán.
 - Nhưng GIỜ thì KHÔNG được tự chế cho sự kiện/lịch hẹn có giờ cụ thể. Nếu người dùng KHÔNG nói giờ cụ thể
   (vd "mai đi học" — thiếu giờ, kind="event"/"appointment"), BẮT BUỘC trả "intent":"unclear" và "reply" hỏi lại
   giờ (vd "Mấy giờ vậy bạn?"). TUYỆT ĐỐI không mặc định 8:00 hay giờ bất kỳ.
