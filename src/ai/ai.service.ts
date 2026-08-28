@@ -153,7 +153,8 @@ export class AiService {
    * Vì sao cần nhiều: gói miễn phí giới hạn theo TỪNG MODEL trong TỪNG PROJECT
    * (quotaId GenerateRequestsPerDayPerProjectPerModel, 20 lượt/ngày). Model đầu hết lượt
    * thì tự nhảy sang model kế tiếp -> tổng số lượt mỗi ngày nhân lên theo số model.
-   * Tạo thêm API key KHÔNG giúp gì vì các key cùng project dùng chung hạn mức.
+   * Kết hợp với nhiều KEY khác project (xem KEYS) thì nhân tiếp: lượt = số project × số model.
+
    */
   private get MODELS(): string[] {
     const raw = this.config.get<string>('GEMINI_MODEL') ?? 'gemini-3.6-flash';
@@ -162,6 +163,26 @@ export class AiService {
       .map((m) => m.trim())
       .filter(Boolean);
     return list.length > 0 ? list : ['gemini-3.6-flash'];
+  }
+
+  /**
+   * Danh sách API key, ưu tiên từ trái sang phải. Đặt trong .env GEMINI_API_KEY,
+   * NHIỀU key thì ngăn bằng dấu phẩy:
+   *
+   *   GEMINI_API_KEY=key_project_A,key_project_B
+   *
+   * Hạn mức miễn phí tính theo PROJECT × MODEL. Nên chỉ có tác dụng khi các key thuộc
+   * PROJECT KHÁC NHAU — nhiều key trong cùng một project vẫn dùng chung hạn mức, khai
+   * báo bao nhiêu cũng vô ích.
+   *
+   * Tổng số lượt/ngày = số project × số model.
+   */
+  private get KEYS(): string[] {
+    const raw = this.config.get<string>('GEMINI_API_KEY') ?? '';
+    return raw
+      .split(',')
+      .map((k) => k.trim())
+      .filter(Boolean);
   }
 
   // Rate-limit đơn giản trong bộ nhớ: tối đa 20 request / user / giờ
@@ -265,8 +286,7 @@ export class AiService {
       };
     }
 
-    const apiKey = this.config.get<string>('GEMINI_API_KEY');
-    if (!apiKey) {
+    if (this.KEYS.length === 0) {
       return { intent: 'unclear', reply: lang === 'en' ? 'The AI Assistant is not configured (missing GEMINI_API_KEY).' : 'Trợ lý AI chưa được cấu hình (thiếu GEMINI_API_KEY).' };
     }
 
@@ -414,7 +434,7 @@ Quy tắc QUAN TRỌNG:
             '\n\n'
           : '';
 
-      const raw = await this.callGemini(apiKey, `${systemPrompt}\n\n${historyBlock}Câu người dùng: "${userText}"`);
+      const raw = await this.callGemini(`${systemPrompt}\n\n${historyBlock}Câu người dùng: "${userText}"`);
       if (!raw) return { intent: 'unclear', reply: this.failureMessage(lang) };
 
       const parsed = JSON.parse(raw) as AiParseResult;
@@ -446,8 +466,7 @@ Quy tắc QUAN TRỌNG:
       };
     }
 
-    const apiKey = this.config.get<string>('GEMINI_API_KEY');
-    if (!apiKey) {
+    if (this.KEYS.length === 0) {
       return { events: [], reply: lang === 'en' ? 'The AI Assistant is not configured (missing GEMINI_API_KEY).' : 'Trợ lý AI chưa được cấu hình (thiếu GEMINI_API_KEY).' };
     }
 
@@ -481,7 +500,7 @@ ${text}
 """`;
 
     try {
-      const raw = await this.callGemini(apiKey, prompt);
+      const raw = await this.callGemini(prompt);
       if (!raw) return { events: [], reply: this.failureMessage(lang) };
 
       const parsed = JSON.parse(raw) as AiExtractResult;
@@ -532,30 +551,35 @@ ${text}
    * 429 kèm RESOURCE_EXHAUSTED = hết hạn mức theo NGÀY -> thử lại bao nhiêu lần cũng vô
    * ích (Google còn bảo chờ ~30s, trong khi ta chỉ chờ 1-2s), nên bỏ cuộc ngay.
    */
-  private async callGemini(apiKey: string, prompt: string): Promise<string | null> {
+  private async callGemini(prompt: string): Promise<string | null> {
     const reqBody = JSON.stringify({
       contents: [{ parts: [{ text: prompt }] }],
       generationConfig: { responseMimeType: 'application/json', temperature: 0.2 },
     });
 
+    const keys = this.KEYS;
     const models = this.MODELS;
-    for (let i = 0; i < models.length; i++) {
-      const model = models[i];
-      const result = await this.callOneModel(apiKey, model, reqBody);
-      if (result !== null) {
-        this.lastFailure = null;
-        if (i > 0) this.logger.log(`Đã chuyển sang model dự phòng "${model}" (model trước hết lượt).`);
-        return result;
-      }
-      // Chỉ chuyển model khi HẾT HẠN MỨC hoặc model đó không dùng được (sai tên/bị gỡ).
-      // Lỗi tạm thời (busy) hay lỗi lạ thì đổi model cũng không giúp gì -> dừng luôn.
-      if (this.lastFailure !== 'quota' && this.lastFailure !== 'config') return null;
-      if (i < models.length - 1) {
-        this.logger.warn(`Model "${model}" không dùng được (${this.lastFailure}) — thử model kế tiếp...`);
+
+    // Duyệt KEY ở vòng ngoài, MODEL ở vòng trong: hạn mức tính theo project × model,
+    // nên vét hết model của key này rồi mới sang key kế tiếp.
+    for (let k = 0; k < keys.length; k++) {
+      for (let i = 0; i < models.length; i++) {
+        const model = models[i];
+        const result = await this.callOneModel(keys[k], model, reqBody);
+        if (result !== null) {
+          this.lastFailure = null;
+          if (k > 0 || i > 0) {
+            this.logger.log(`Dùng key #${k + 1} + model dự phòng "${model}" (lựa chọn trước đó hết lượt).`);
+          }
+          return result;
+        }
+        // Chỉ đi tiếp khi HẾT HẠN MỨC hoặc model/key đó không dùng được (sai tên, bị gỡ).
+        // Lỗi tạm thời (busy) hay lỗi lạ thì đổi cũng không giúp gì -> dừng luôn.
+        if (this.lastFailure !== 'quota' && this.lastFailure !== 'config') return null;
+        this.logger.warn(`Key #${k + 1} + "${model}" không dùng được (${this.lastFailure}) — thử tiếp...`);
       }
     }
-    // Hết sạch model trong danh sách: nếu cái cuối lỗi cấu hình thì vẫn báo hết hạn mức
-    // sẽ gây hiểu nhầm, nên giữ nguyên lý do của model cuối cùng.
+    // Vét sạch mọi key × model mà vẫn không được: giữ nguyên lý do của lần thử cuối.
     return null;
   }
 
