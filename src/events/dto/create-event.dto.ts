@@ -22,8 +22,11 @@ export class CreateEventDto {
   @MaxLength(200)
   title!: string;
 
+  // Mô tả cho phép HTML nên dài hơn các ô khác, nhưng vẫn phải có trần:
+  // trước đây trường này không giới hạn, ai gửi thẳng API là nhét được chuỗi khổng lồ.
   @IsOptional()
   @IsString()
+  @MaxLength(5000)
   description?: string;
 
   @IsOptional()

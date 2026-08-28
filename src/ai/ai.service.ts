@@ -41,7 +41,6 @@ export interface AiParseResult {
     | 'leave_group'
     | 'delete_group'
     | 'remove_group_member'
-    | 'mute_group'
     | 'send_group_message'
     | 'unclear';
   // create_event
@@ -56,6 +55,8 @@ export interface AiParseResult {
   query?: string;
   // invite_guest: danh sách email khách cần thêm vào sự kiện
   guestEmails?: string[];
+  // create_event/invite_guest: khách được mời có quyền SỬA hay chỉ xem. Mặc định chỉ xem.
+  guestsCanEdit?: boolean;
   // search: khoảng thời gian (vd "tuần này")
   rangeStart?: string;
   rangeEnd?: string;
@@ -120,8 +121,6 @@ export interface AiParseResult {
   // ----- Nhóm nâng cao -----
   /** remove_group_member: email thành viên cần xoá. */
   memberEmail?: string;
-  /** mute_group: true = tắt thông báo, false = bật lại. */
-  muted?: boolean;
   /** send_group_message: nội dung tin nhắn cần gửi. */
   messageText?: string;
   reply: string; // câu phản hồi cho người dùng
@@ -153,7 +152,8 @@ export class AiService {
    * Vì sao cần nhiều: gói miễn phí giới hạn theo TỪNG MODEL trong TỪNG PROJECT
    * (quotaId GenerateRequestsPerDayPerProjectPerModel, 20 lượt/ngày). Model đầu hết lượt
    * thì tự nhảy sang model kế tiếp -> tổng số lượt mỗi ngày nhân lên theo số model.
-   * Tạo thêm API key KHÔNG giúp gì vì các key cùng project dùng chung hạn mức.
+   * Kết hợp với nhiều KEY khác project (xem KEYS) thì nhân tiếp: lượt = số project × số model.
+
    */
   private get MODELS(): string[] {
     const raw = this.config.get<string>('GEMINI_MODEL') ?? 'gemini-3.6-flash';
@@ -165,23 +165,23 @@ export class AiService {
   }
 
   /**
-   * Danh sách API key Gemini, thử lần lượt. Hỗ trợ GỘP cả 2 cách khai báo trong .env:
-   *   - GEMINI_API_KEY=key1,key2      (nhiều key ngăn bằng dấu phẩy)
-   *   - GEMINI_API_KEY_2=..., GEMINI_API_KEY_3=...   (đánh số, tới _10)
-   * Khi 1 key đã hết hạn mức TẤT CẢ model của nó -> tự chuyển sang key kế tiếp,
-   * nên tổng lượt/ngày = (số key) × (số model) × 20. Chỉ báo hết quota khi mọi key đều cạn.
+   * Danh sách API key, ưu tiên từ trái sang phải. Đặt trong .env GEMINI_API_KEY,
+   * NHIỀU key thì ngăn bằng dấu phẩy:
+   *
+   *   GEMINI_API_KEY=key_project_A,key_project_B
+   *
+   * Hạn mức miễn phí tính theo PROJECT × MODEL. Nên chỉ có tác dụng khi các key thuộc
+   * PROJECT KHÁC NHAU — nhiều key trong cùng một project vẫn dùng chung hạn mức, khai
+   * báo bao nhiêu cũng vô ích.
+   *
+   * Tổng số lượt/ngày = số project × số model.
    */
   private get KEYS(): string[] {
-    const out: string[] = [];
-    const add = (raw?: string | null) => {
-      if (!raw) return;
-      for (const k of raw.split(',').map((s) => s.trim()).filter(Boolean)) {
-        if (!out.includes(k)) out.push(k);
-      }
-    };
-    add(this.config.get<string>('GEMINI_API_KEY'));
-    for (let n = 2; n <= 10; n++) add(this.config.get<string>(`GEMINI_API_KEY_${n}`));
-    return out;
+    const raw = this.config.get<string>('GEMINI_API_KEY') ?? '';
+    return raw
+      .split(',')
+      .map((k) => k.trim())
+      .filter(Boolean);
   }
 
   // Rate-limit đơn giản trong bộ nhớ: tối đa 20 request / user / giờ
@@ -228,7 +228,6 @@ export class AiService {
       case 'respond_invite':
       case 'respond_group_invite':
       case 'restore_event':
-      case 'mute_group':
       case 'send_group_message':
         return ai?.allow_update === false ? denied(labels.update) : result;
       case 'delete_event':
@@ -293,7 +292,7 @@ export class AiService {
     const systemPrompt = `Bạn là trợ lý ĐIỀU KHIỂN app Lịch này bằng tiếng Việt. Bây giờ là ${now.toISOString()} (giờ Việt Nam UTC+7).
 Người dùng nói 1 câu để thao tác app. Xác định Ý ĐỊNH và trả về DUY NHẤT một JSON đúng schema, KHÔNG thêm chữ nào khác, KHÔNG markdown:
 {
-  "intent": "create_event" | "plan_schedule" | "search_events" | "reschedule_event" | "delete_event" | "invite_guest" | "complete_task" | "create_note" | "search_notes" | "delete_note" | "create_group" | "join_group" | "invite_group_member" | "create_group_event" | "change_setting" | "export_calendar" | "stop_repeat" | "delete_repeat_range" | "respond_invite" | "respond_group_invite" | "restore_event" | "leave_group" | "delete_group" | "remove_group_member" | "mute_group" | "send_group_message" | "unclear",
+  "intent": "create_event" | "plan_schedule" | "search_events" | "reschedule_event" | "delete_event" | "invite_guest" | "complete_task" | "create_note" | "search_notes" | "delete_note" | "create_group" | "join_group" | "invite_group_member" | "create_group_event" | "change_setting" | "export_calendar" | "stop_repeat" | "delete_repeat_range" | "respond_invite" | "respond_group_invite" | "restore_event" | "leave_group" | "delete_group" | "remove_group_member" | "send_group_message" | "unclear",
   "count": "plan_schedule only: number of sessions, default 1",
   "durationMinutes": "plan_schedule only: minutes per session, default 60",
   "planStart": "plan_schedule only: ISO start of planning window",
@@ -309,6 +308,7 @@ Người dùng nói 1 câu để thao tác app. Xác định Ý ĐỊNH và tr�
   "withMeet": "create_event/create_group_event: true nếu người dùng muốn tạo KÈM phòng họp Google Meet / họp online / video call. Mặc định false.",
   "query": "search_events/reschedule_event/delete_event/invite_guest/complete_task: từ khóa TÊN sự kiện/việc cần thao tác (vd 'họp nhóm')",
   "guestEmails": "invite_guest, create_event, HOẶC invite_group_member: mảng email cần mời (vd ['an@gmail.com']).",
+  "guestsCanEdit": "create_event/invite_guest: true CHỈ KHI người dùng nói rõ cho khách quyền sửa/chỉnh/đổi giờ (vd 'cho họ sửa', 'quyền chỉnh sửa'). Mặc định false = chỉ xem.",
   "rangeStart": "search_events: ISO 8601 đầu khoảng thời gian nếu có (vd 'tuần này')",
   "rangeEnd": "search_events: ISO 8601 cuối khoảng",
   "newStartTime": "reschedule_event: ISO 8601 giờ bắt đầu MỚI",
@@ -330,7 +330,6 @@ Người dùng nói 1 câu để thao tác app. Xác định Ý ĐỊNH và tr�
   "recurrenceUntil": "create_event only: lặp tới ngày nào, dạng YYYY-MM-DD",
   "rsvpStatus": "respond_invite / respond_group_invite: 'accepted' | 'declined' | 'tentative'",
   "memberEmail": "remove_group_member only: email thành viên cần xoá",
-  "muted": "mute_group only: true = tắt thông báo nhóm, false = bật lại",
   "messageText": "send_group_message only: nội dung tin nhắn cần gửi",
   "reply": "một câu tiếng Việt ngắn. Với các hành động TẠO/SỬA/XÓA: mô tả điều SẼ làm — KHÔNG nói 'đã ...' vì cần bấm Xác nhận"
 }
@@ -340,6 +339,9 @@ Ví dụ ý định:
 - "thêm việc cần làm: nộp báo cáo trước 5h chiều mai" -> create_event (kind="task", title="Nộp báo cáo", startTime/endTime=5h chiều mai)
 - "tạo lịch hẹn khám răng 9h sáng thứ 5" -> create_event (kind="appointment")
 - "mai 3h họp nhóm 1 tiếng, mời an@gmail.com" -> create_event (title, startTime, endTime, guestEmails=["an@gmail.com"])
+- "mời an@gmail.com và cho họ quyền sửa" -> guestsCanEdit=true (không nói gì thì để false)
+- "họp hàng tuần vào thứ 2 lúc 9h, 10 buổi" -> create_event (recurrenceFreq="weekly", recurrenceCount=10)
+- "chào cờ mỗi sáng thứ 2 tới cuối năm" -> create_event (recurrenceFreq="weekly", recurrenceUntil=ISO 31/12)
 - "tuần này có họp gì" -> search_events (query rỗng, range = tuần này)
 - "dời họp nhóm sang 4h chiều" -> reschedule_event (query="họp nhóm", newStartTime=...)
 - "xóa họp nhóm ngày mai" -> delete_event (query="họp nhóm")
@@ -393,7 +395,6 @@ Quy tắc QUAN TRỌNG:
   • "rời nhóm X" -> leave_group (groupQuery).
   • "giải tán nhóm X" / "xoá nhóm X" -> delete_group (groupQuery). ĐÂY LÀ THAO TÁC PHÁ HUỶ.
   • "xoá <email> khỏi nhóm X" -> remove_group_member (groupQuery, memberEmail).
-  • "tắt thông báo nhóm X" -> mute_group (groupQuery, muted=true); "bật lại" -> muted=false.
   • "nhắn vào nhóm X: <nội dung>" -> send_group_message (groupQuery, messageText).
   • Thiếu tên nhóm -> "unclear" hỏi nhóm nào.
 - CÀI ĐẶT (change_setting) — giá trị hợp lệ theo từng khoá:
@@ -561,25 +562,29 @@ ${text}
 
     const keys = this.KEYS;
     const models = this.MODELS;
+
+    // Duyệt KEY ở vòng ngoài, MODEL ở vòng trong: hạn mức tính theo project × model,
+    // nên vét hết model của key này rồi mới sang key kế tiếp.
     for (let k = 0; k < keys.length; k++) {
       for (let i = 0; i < models.length; i++) {
         const model = models[i];
         const result = await this.callOneModel(keys[k], model, reqBody);
         if (result !== null) {
           this.lastFailure = null;
-          if (k > 0 || i > 0)
-            this.logger.log(`Dùng key #${k + 1} · model "${model}" (các cái trước đã hết lượt/không dùng được).`);
+          if (k > 0 || i > 0) {
+            this.logger.log(`Dùng key #${k + 1} + model dự phòng "${model}" (lựa chọn trước đó hết lượt).`);
+          }
           return result;
         }
-        // Chỉ chuyển model/key khi HẾT HẠN MỨC (quota) hoặc key/model không dùng được
-        // (config: sai key 401/403, sai tên model 400/404). Lỗi tạm thời (busy) / lỗi lạ thì
-        // đổi cũng vô ích -> dừng luôn để báo người dùng thử lại (KHÔNG báo hết quota nhầm).
+        // Chỉ đi tiếp khi HẾT HẠN MỨC hoặc model/key đó không dùng được (sai tên, bị gỡ).
+        // Lỗi tạm thời (busy) hay lỗi lạ thì đổi cũng không giúp gì -> dừng luôn.
         if (this.lastFailure !== 'quota' && this.lastFailure !== 'config') return null;
+        this.logger.warn(`Key #${k + 1} + "${model}" không dùng được (${this.lastFailure}) — thử tiếp...`);
       }
       if (k < keys.length - 1)
         this.logger.warn(`Key #${k + 1} đã cạn mọi model (${this.lastFailure}) — chuyển sang key #${k + 2}...`);
     }
-    // Đã thử HẾT mọi key × mọi model mà không được. lastFailure giữ lý do lần cuối (thường 'quota').
+    // Vét sạch mọi key × model mà vẫn không được: giữ nguyên lý do của lần thử cuối.
     return null;
   }
 
