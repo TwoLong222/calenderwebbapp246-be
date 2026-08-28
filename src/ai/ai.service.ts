@@ -196,6 +196,54 @@ export class AiService {
   ) {}
 
   /** Chặn hành động AI theo ai_settings của user (defense-in-depth, không chỉ ẩn UI). */
+  /**
+   * Câu người dùng có nêu GIỜ không? Bắt các cách viết thường gặp:
+   *   "9h", "9 giờ", "15:30", "3h30", "8 AM", "sáng/trưa/chiều/tối", "nửa đêm"
+   * Chỉ cần nhận DẤU HIỆU có giờ, không cần hiểu chính xác mấy giờ. Cụm "cả ngày" cũng
+   * tính là ĐÃ nói rõ (người dùng chủ động không cần giờ).
+   */
+  private mentionsTime(text: string): boolean {
+    const t = text.toLowerCase();
+    if (/\d{1,2}\s*:\s*\d{2}/.test(t)) return true; // 15:30
+    // "9h", "9h30" — nhung KHONG duoc an nham "thu 5 hop" (so + chu h cua tu khac):
+    // sau chu "h" phai la so hoac dau/khoang trang, tuyet doi khong phai chu cai.
+    if (/\d{1,2}\s*h(\s*\d{1,2})?(?![a-zA-ZÀ-ỹ])/.test(t)) return true;
+    if (/\d{1,2}\s*(giờ|gio)\b/.test(t)) return true; // "9 giờ"
+    if (/\d{1,2}\s*(am|pm)\b/i.test(t)) return true; // 8 AM
+    if (/(sáng|trưa|chiều|tối|đêm|nửa đêm|sang|trua|chieu|toi|dem)\b/.test(t)) return true;
+    if (/(noon|midnight|morning|afternoon|evening|tonight)\b/.test(t)) return true;
+    // "cả ngày" = người dùng ĐÃ nói rõ không cần giờ -> không phải hỏi lại.
+    if (/(cả ngày|ca ngay|nguyên ngày|nguyen ngay|all[- ]day)/.test(t)) return true;
+    return false;
+  }
+
+  /**
+   * CHỐT CHẶN cho luật "không tự chế giờ".
+   *
+   * Prompt đã dặn: người dùng không nói giờ thì phải trả "unclear" và hỏi lại. Nhưng prompt
+   * chỉ là lời dặn — model vẫn có lúc vừa hỏi "mấy giờ vậy?" vừa trả create_event kèm 08:00.
+   * Giao diện thấy create_event là hiện thẻ Xác nhận, người dùng bấm là tạo nhầm sự kiện vào
+   * giờ mình chưa hề chọn. Nên chặn cứng ở đây thay vì tin model nghe lời.
+   *
+   * KHÔNG áp cho: việc cần làm (task), sự kiện cả ngày — hai loại đó không cần giờ chính xác.
+   */
+  private requireExplicitTime(parsed: AiParseResult, userText: string, lang: 'vi' | 'en'): AiParseResult {
+    if (parsed.intent !== 'create_event') return parsed;
+    if (parsed.kind === 'task') return parsed;
+    if (!parsed.startTime) return parsed;
+    if (this.mentionsTime(userText)) return parsed;
+
+    return {
+      intent: 'unclear',
+      reply:
+        parsed.reply && /\?/.test(parsed.reply)
+          ? parsed.reply // model đã tự hỏi giờ rồi -> giữ nguyên câu hỏi của nó
+          : lang === 'en'
+            ? 'What time should I set it for?'
+            : 'Bạn muốn đặt lịch vào mấy giờ vậy?',
+    };
+  }
+
   private enforceAiPermission(
     result: AiParseResult,
     ai: any,
@@ -455,7 +503,7 @@ Quy tắc QUAN TRỌNG:
 
       const parsed = JSON.parse(raw) as AiParseResult;
       if (!parsed?.intent) return { intent: 'unclear', reply: parsed?.reply || (lang === 'en' ? "Sorry, I didn't understand that." : 'Xin lỗi, mình chưa hiểu ý bạn.') };
-      return this.enforceAiPermission(parsed, ai, lang);
+      return this.enforceAiPermission(this.requireExplicitTime(parsed, userText, lang), ai, lang);
     } catch (e) {
       this.logger.error('Lỗi gọi/parse Gemini', e as Error);
       return { intent: 'unclear', reply: lang === 'en' ? 'Sorry, I could not process that. Try rephrasing.' : 'Xin lỗi, mình chưa xử lý được câu này. Thử diễn đạt khác nhé.' };
