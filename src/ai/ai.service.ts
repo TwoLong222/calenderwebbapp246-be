@@ -164,6 +164,26 @@ export class AiService {
     return list.length > 0 ? list : ['gemini-3.6-flash'];
   }
 
+  /**
+   * Danh sách API key Gemini, thử lần lượt. Hỗ trợ GỘP cả 2 cách khai báo trong .env:
+   *   - GEMINI_API_KEY=key1,key2      (nhiều key ngăn bằng dấu phẩy)
+   *   - GEMINI_API_KEY_2=..., GEMINI_API_KEY_3=...   (đánh số, tới _10)
+   * Khi 1 key đã hết hạn mức TẤT CẢ model của nó -> tự chuyển sang key kế tiếp,
+   * nên tổng lượt/ngày = (số key) × (số model) × 20. Chỉ báo hết quota khi mọi key đều cạn.
+   */
+  private get KEYS(): string[] {
+    const out: string[] = [];
+    const add = (raw?: string | null) => {
+      if (!raw) return;
+      for (const k of raw.split(',').map((s) => s.trim()).filter(Boolean)) {
+        if (!out.includes(k)) out.push(k);
+      }
+    };
+    add(this.config.get<string>('GEMINI_API_KEY'));
+    for (let n = 2; n <= 10; n++) add(this.config.get<string>(`GEMINI_API_KEY_${n}`));
+    return out;
+  }
+
   // Rate-limit đơn giản trong bộ nhớ: tối đa 20 request / user / giờ
   private readonly hits = new Map<string, number[]>();
   private readonly LIMIT = 20;
@@ -265,8 +285,7 @@ export class AiService {
       };
     }
 
-    const apiKey = this.config.get<string>('GEMINI_API_KEY');
-    if (!apiKey) {
+    if (this.KEYS.length === 0) {
       return { intent: 'unclear', reply: lang === 'en' ? 'The AI Assistant is not configured (missing GEMINI_API_KEY).' : 'Trợ lý AI chưa được cấu hình (thiếu GEMINI_API_KEY).' };
     }
 
@@ -414,7 +433,7 @@ Quy tắc QUAN TRỌNG:
             '\n\n'
           : '';
 
-      const raw = await this.callGemini(apiKey, `${systemPrompt}\n\n${historyBlock}Câu người dùng: "${userText}"`);
+      const raw = await this.callGemini(`${systemPrompt}\n\n${historyBlock}Câu người dùng: "${userText}"`);
       if (!raw) return { intent: 'unclear', reply: this.failureMessage(lang) };
 
       const parsed = JSON.parse(raw) as AiParseResult;
@@ -446,8 +465,7 @@ Quy tắc QUAN TRỌNG:
       };
     }
 
-    const apiKey = this.config.get<string>('GEMINI_API_KEY');
-    if (!apiKey) {
+    if (this.KEYS.length === 0) {
       return { events: [], reply: lang === 'en' ? 'The AI Assistant is not configured (missing GEMINI_API_KEY).' : 'Trợ lý AI chưa được cấu hình (thiếu GEMINI_API_KEY).' };
     }
 
@@ -481,7 +499,7 @@ ${text}
 """`;
 
     try {
-      const raw = await this.callGemini(apiKey, prompt);
+      const raw = await this.callGemini(prompt);
       if (!raw) return { events: [], reply: this.failureMessage(lang) };
 
       const parsed = JSON.parse(raw) as AiExtractResult;
@@ -507,8 +525,8 @@ ${text}
     switch (this.lastFailure) {
       case 'quota':
         return lang === 'en'
-          ? "You've used up today's free AI quota. It resets tomorrow, or switch to another model in GEMINI_MODEL."
-          : 'Hết lượt dùng AI miễn phí hôm nay rồi. Hạn mức reset vào ngày mai, hoặc đổi model khác trong GEMINI_MODEL.';
+          ? "You've used up today's free AI quota on all configured keys and models. It resets tomorrow — or add another GEMINI_API_KEY / model."
+          : 'Hết lượt AI miễn phí hôm nay rồi (đã thử hết mọi key và model). Hạn mức reset vào ngày mai — hoặc thêm GEMINI_API_KEY / model khác.';
       case 'config':
         return lang === 'en'
           ? 'The AI key or model is misconfigured. Please check GEMINI_API_KEY / GEMINI_MODEL.'
@@ -528,34 +546,40 @@ ${text}
    * Gọi Gemini generateContent. Trả về text JSON thô, hoặc null nếu thất bại
    * (lý do lưu ở this.lastFailure).
    *
-   * Retry CHỈ áp dụng cho lỗi tạm thời (503, hoặc 429 do vượt tần suất theo phút).
-   * 429 kèm RESOURCE_EXHAUSTED = hết hạn mức theo NGÀY -> thử lại bao nhiêu lần cũng vô
-   * ích (Google còn bảo chờ ~30s, trong khi ta chỉ chờ 1-2s), nên bỏ cuộc ngay.
+   * Thử LẦN LƯỢT: mỗi KEY × mỗi MODEL. Khi 1 key hết hạn mức / không dùng được TẤT CẢ
+   * model của nó thì tự chuyển sang key kế tiếp. Chỉ trả về thất bại (để báo "hết quota")
+   * khi ĐÃ thử hết mọi key × mọi model.
+   *
+   * Retry (bên trong callOneModel) CHỈ cho lỗi tạm thời (503, hoặc 429 vượt tần suất/phút).
+   * 429 kèm RESOURCE_EXHAUSTED = hết hạn mức theo NGÀY -> không retry, chuyển model/key ngay.
    */
-  private async callGemini(apiKey: string, prompt: string): Promise<string | null> {
+  private async callGemini(prompt: string): Promise<string | null> {
     const reqBody = JSON.stringify({
       contents: [{ parts: [{ text: prompt }] }],
       generationConfig: { responseMimeType: 'application/json', temperature: 0.2 },
     });
 
+    const keys = this.KEYS;
     const models = this.MODELS;
-    for (let i = 0; i < models.length; i++) {
-      const model = models[i];
-      const result = await this.callOneModel(apiKey, model, reqBody);
-      if (result !== null) {
-        this.lastFailure = null;
-        if (i > 0) this.logger.log(`Đã chuyển sang model dự phòng "${model}" (model trước hết lượt).`);
-        return result;
+    for (let k = 0; k < keys.length; k++) {
+      for (let i = 0; i < models.length; i++) {
+        const model = models[i];
+        const result = await this.callOneModel(keys[k], model, reqBody);
+        if (result !== null) {
+          this.lastFailure = null;
+          if (k > 0 || i > 0)
+            this.logger.log(`Dùng key #${k + 1} · model "${model}" (các cái trước đã hết lượt/không dùng được).`);
+          return result;
+        }
+        // Chỉ chuyển model/key khi HẾT HẠN MỨC (quota) hoặc key/model không dùng được
+        // (config: sai key 401/403, sai tên model 400/404). Lỗi tạm thời (busy) / lỗi lạ thì
+        // đổi cũng vô ích -> dừng luôn để báo người dùng thử lại (KHÔNG báo hết quota nhầm).
+        if (this.lastFailure !== 'quota' && this.lastFailure !== 'config') return null;
       }
-      // Chỉ chuyển model khi HẾT HẠN MỨC hoặc model đó không dùng được (sai tên/bị gỡ).
-      // Lỗi tạm thời (busy) hay lỗi lạ thì đổi model cũng không giúp gì -> dừng luôn.
-      if (this.lastFailure !== 'quota' && this.lastFailure !== 'config') return null;
-      if (i < models.length - 1) {
-        this.logger.warn(`Model "${model}" không dùng được (${this.lastFailure}) — thử model kế tiếp...`);
-      }
+      if (k < keys.length - 1)
+        this.logger.warn(`Key #${k + 1} đã cạn mọi model (${this.lastFailure}) — chuyển sang key #${k + 2}...`);
     }
-    // Hết sạch model trong danh sách: nếu cái cuối lỗi cấu hình thì vẫn báo hết hạn mức
-    // sẽ gây hiểu nhầm, nên giữ nguyên lý do của model cuối cùng.
+    // Đã thử HẾT mọi key × mọi model mà không được. lastFailure giữ lý do lần cuối (thường 'quota').
     return null;
   }
 
