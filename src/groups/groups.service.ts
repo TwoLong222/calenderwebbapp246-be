@@ -3,7 +3,7 @@
 // Lưu ý bảo mật: chủ yếu dùng quyền của chính người dùng để tuân luật bảo mật (RLS);
 // chỉ vài thao tác đặc biệt mới dùng quyền admin, và có tự kiểm tra quyền trước khi ghi.
 
-import { ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { SupabaseService } from '../supabase/supabase.service';
 import { CreateGroupEventDto, UpdateGroupEventDto } from './dto/group-event.dto';
@@ -19,8 +19,38 @@ export class GroupsService {
 
   // ============================ NHÓM ============================
 
+  /** Số nhóm tối đa một người được ở CÙNG LÚC — tính cả nhóm tự tạo lẫn nhóm được mời vào. */
+  static readonly MAX_GROUPS = 5;
+
+  /** Đếm số nhóm user đang thực sự ở trong (đã tham gia, không tính lời mời đang chờ). */
+  private async countMyGroups(userId: string): Promise<number> {
+    const { count, error } = await this.admin
+      .from('group_members')
+      .select('group_id', { count: 'exact', head: true })
+      .eq('user_id', userId)
+      .not('joined_at', 'is', null);
+    if (error) throw error;
+    return count ?? 0;
+  }
+
+  /**
+   * Chặn khi đã đủ hạn mức. Chặn ở MÁY CHỦ chứ không chỉ ẩn nút: ai gọi thẳng API
+   * vẫn phải theo. Áp cho cả tạo mới, vào bằng mã, và đồng ý lời mời — nếu chỉ chặn
+   * lúc tạo thì người khác mời là vẫn vượt hạn mức được.
+   */
+  private async assertUnderGroupLimit(userId: string, action: string): Promise<void> {
+    const current = await this.countMyGroups(userId);
+    if (current >= GroupsService.MAX_GROUPS) {
+      throw new BadRequestException(
+        `Bạn đang ở ${current} nhóm, vượt giới hạn ${GroupsService.MAX_GROUPS} nhóm nên không ${action} được. Hãy rời hoặc giải tán bớt một nhóm.`,
+      );
+    }
+  }
+
   /** Tạo nhóm: tạo 1 lịch riêng cho nhóm + bản ghi nhóm + gán người tạo làm chủ (owner). */
   async createGroup(supabase: SupabaseClient, userId: string, userEmail: string, name: string) {
+    await this.assertUnderGroupLimit(userId, 'tạo thêm nhóm');
+
     // 1) Lịch riêng của nhóm (owner_id = người tạo, không phải lịch chính)
     const { data: cal, error: calErr } = await supabase
       .from('calendars')
@@ -104,6 +134,15 @@ export class GroupsService {
   async joinByCode(code: string, userId: string, userEmail: string) {
     const { data: group } = await this.admin.from('groups').select('*').eq('join_code', code.trim()).maybeSingle();
     if (!group) throw new NotFoundException('Mã nhóm không đúng.');
+    // Đã ở sẵn trong nhóm này thì cho qua (vào lại bằng mã không làm danh sách dài thêm).
+    const { data: already } = await this.admin
+      .from('group_members')
+      .select('group_id')
+      .eq('group_id', group.id)
+      .eq('user_id', userId)
+      .not('joined_at', 'is', null)
+      .maybeSingle();
+    if (!already) await this.assertUnderGroupLimit(userId, 'vào thêm nhóm');
 
     await this.admin.from('group_members').upsert(
       {
@@ -159,6 +198,7 @@ export class GroupsService {
 
   /** Người được mời ĐỒNG Ý -> trở thành thành viên (set joined_at + status accepted). */
   async acceptInvite(userId: string, groupId: string) {
+    await this.assertUnderGroupLimit(userId, 'nhận thêm lời mời');
     const { data, error } = await this.admin
       .from('group_members')
       .update({ status: 'accepted', joined_at: new Date().toISOString() })
