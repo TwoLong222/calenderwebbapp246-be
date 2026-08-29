@@ -147,7 +147,9 @@ export class MailService {
       const message = err instanceof Error ? err.message : String(err);
       // Tách LỖI MẠNG khỏi LỖI ĐĂNG NHẬP: trước đây câu nào cũng bảo "kiểm tra
       // SMTP_USER/SMTP_PASS", nên lỗi không ra được Internet lại bị đi soi mật khẩu.
-      const network = /ENETUNREACH|EHOSTUNREACH|ETIMEDOUT|ECONNREFUSED|EAI_AGAIN|ENOTFOUND/.test(message);
+      const network =
+        /ENETUNREACH|EHOSTUNREACH|ETIMEDOUT|ECONNREFUSED|EAI_AGAIN|ENOTFOUND|ESOCKET/.test(message) ||
+        /connection timeout|greeting never received|timed? ?out|socket close/i.test(message);
       const hint = network
         ? `Máy chủ KHÔNG kết nối được tới ${this.config.get<string>('SMTP_HOST') ?? 'SMTP host'}:${this.config.get<string>('SMTP_PORT') ?? '587'} — vấn đề MẠNG, không phải mật khẩu. Thường do nhà cung cấp chặn cổng SMTP hoặc không có IPv6. Cân nhắc dùng Gmail API (GMAIL_*) hoặc Brevo (BREVO_*) vì cả hai gửi qua HTTPS.`
         : `Kiểm tra SMTP_USER/SMTP_PASS (App Password Gmail 16 ký tự) hoặc cấu hình GMAIL_* trong .env.`;
