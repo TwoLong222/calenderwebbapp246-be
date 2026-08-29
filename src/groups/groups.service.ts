@@ -127,11 +127,21 @@ export class GroupsService {
   async invite(supabase: SupabaseClient, userId: string, groupId: string, email: string) {
     await this.assertOwner(supabase, userId, groupId);
     const normalized = email.trim().toLowerCase();
+
+    // GẮN LUÔN user_id nếu email này đã có tài khoản.
+    //
+    // Trước đây dòng mời được ghi với user_id = NULL, chờ syncInvites() gắn vào lúc người
+    // đó MỞ APP lần sau. Mà listPendingInvites() lọc theo .eq('user_id', ...), nên tới khi
+    // chưa gắn thì người được mời KHÔNG thấy lời mời — kể cả bấm F5 mà syncInvites chưa
+    // chạy xong. Gắn ngay tại đây thì lời mời hiện được liền, và cũng có user_id để bắn
+    // realtime cho đúng người.
+    const invitedUserId = await this.settings.resolveUserIdByEmail(normalized);
+
     // upsert theo (group_id, email): nếu đã mời rồi thì không lỗi
     const { error } = await this.admin
       .from('group_members')
       .upsert(
-        { group_id: groupId, email: normalized, role: 'member', status: 'pending' },
+        { group_id: groupId, email: normalized, role: 'member', status: 'pending', user_id: invitedUserId },
         { onConflict: 'group_id,email', ignoreDuplicates: true },
       );
     if (error) throw error;
