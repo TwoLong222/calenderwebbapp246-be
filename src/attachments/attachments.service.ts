@@ -15,8 +15,7 @@ import { randomUUID } from 'crypto';
 import { SupabaseService } from '../supabase/supabase.service';
 
 const BUCKET = 'event-files';
-const MAX_BYTES = 10 * 1024 * 1024; // 10MB — mỗi file
-const MAX_EVENT_BYTES = 100 * 1024 * 1024; // 100MB — TỔNG mỗi sự kiện
+const MAX_BYTES = 10 * 1024 * 1024; // 10MB
 
 /** Kiểu tối giản cho file từ Multer (né phụ thuộc @types/multer). */
 interface UploadedFileLike {
@@ -45,20 +44,6 @@ export class AttachmentsService {
     if (!file) throw new BadRequestException('Thiếu file.');
     if (file.size > MAX_BYTES) {
       throw new BadRequestException('File quá lớn (tối đa 10MB).');
-    }
-
-    // Chặn khi TỔNG dung lượng đính kèm của sự kiện + file mới vượt 100MB.
-    // Dùng client user -> RLS chỉ cho đọc tệp của sự kiện user được xem.
-    const { data: existing } = await supabase
-      .from('event_attachments')
-      .select('size_bytes')
-      .eq('event_id', eventId);
-    const usedBytes = (existing ?? []).reduce(
-      (sum, r) => sum + (Number((r as { size_bytes?: number }).size_bytes) || 0),
-      0,
-    );
-    if (usedBytes + file.size > MAX_EVENT_BYTES) {
-      throw new BadRequestException('Tổng dung lượng đính kèm của sự kiện đã vượt 100MB.');
     }
 
     const from = this.parseDate(availableFrom);
