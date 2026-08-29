@@ -576,6 +576,15 @@ export class GroupsService {
   }
 
   /** user_id (đã tham gia) của mọi thành viên nhóm — dùng để báo realtime "groups:changed". */
+  /**
+   * user_id của một email (null nếu email đó chưa có tài khoản).
+   * Dùng để bắn realtime cho CHÍNH NGƯỜI VỪA ĐƯỢC MỜI — họ chưa phải thành viên nên
+   * không nằm trong listMemberUserIds.
+   */
+  async userIdByEmail(email: string): Promise<string | null> {
+    return this.settings.resolveUserIdByEmail(email);
+  }
+
   async listMemberUserIds(groupId: string): Promise<string[]> {
     const { data } = await this.admin
       .from('group_members')

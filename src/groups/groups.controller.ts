@@ -85,7 +85,12 @@ export class GroupsController {
   @Post(':id/invite')
   async invite(@Req() req: any, @CurrentUser() user: User, @Param('id') id: string, @Body() dto: InviteMemberDto) {
     const res = await this.groups.invite(req.supabase, user.id, id, dto.email);
-    this.gateway.notifyGroupsChanged(await this.groups.listMemberUserIds(id));
+    // listMemberUserIds chỉ trả về người ĐÃ tham gia (joined_at != null), nên người vừa
+    // được mời KHÔNG nằm trong đó -> trước đây họ không nhận được tín hiệu nào, phải F5
+    // mới thấy lời mời. Bắn thêm cho chính họ nếu email đó đã có tài khoản.
+    const targets = await this.groups.listMemberUserIds(id);
+    const invitedId = await this.groups.userIdByEmail(res.email);
+    this.gateway.notifyGroupsChanged(invitedId && !targets.includes(invitedId) ? [...targets, invitedId] : targets);
     return res;
   }
 
