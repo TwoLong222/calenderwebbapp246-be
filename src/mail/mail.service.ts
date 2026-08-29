@@ -12,9 +12,11 @@
 
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import * as dns from 'node:dns';
 import * as nodemailer from 'nodemailer';
 import MailComposer from 'nodemailer/lib/mail-composer';
 import type Mail from 'nodemailer/lib/mailer';
+import type SMTPPool from 'nodemailer/lib/smtp-pool';
 import { auth as googleAuth, gmail_v1, gmail as gmailApi } from '@googleapis/gmail';
 
 interface ReminderEmailParams {
@@ -38,6 +40,10 @@ interface InviteEmailParams {
   /** Link bấm "Từ chối" — GET, không cần đăng nhập */
   declineUrl: string;
 }
+
+// Node 18+ mặc định trả IPv6 trước. Máy chủ không có IPv6 sẽ chết ngay ở bước kết nối,
+// nên đặt IPv4 lên trước cho MỌI lệnh phân giải tên miền trong tiến trình này.
+dns.setDefaultResultOrder('ipv4first');
 
 @Injectable()
 export class MailService {
@@ -96,13 +102,19 @@ export class MailService {
       this.logger.log(`MailService dùng GMAIL API (gửi qua HTTPS) — người gửi ${gmailSender}`);
     } else {
       // ----- Tầng 2: SMTP (dự phòng) -----
-      this.transporter = nodemailer.createTransport({
+      // family: 4 không nằm trong typings của nodemailer nhưng được chuyển thẳng xuống
+      // net.connect, nên khai báo kiểu giao riêng ở đây thay vì ép kiểu bừa.
+      const smtpOptions: SMTPPool.Options & { family?: number } = {
         host: this.config.get<string>('SMTP_HOST'),
         port: Number(this.config.get<string>('SMTP_PORT') ?? 587),
         secure: this.config.get<string>('SMTP_SECURE') === 'true',
         pool: true,
         maxConnections: 3,
         maxMessages: 100,
+        // Máy chủ (vd Render) thường KHÔNG có đường ra IPv6. Không ép IPv4 thì Node phân
+        // giải smtp.gmail.com ra địa chỉ IPv6 trước rồi chết với ENETUNREACH — nhìn giống
+        // hệt lỗi sai mật khẩu nhưng thật ra chưa hề kết nối được tới Gmail.
+        family: 4,
         connectionTimeout: 20000,
         greetingTimeout: 20000,
         socketTimeout: 30000,
@@ -110,7 +122,8 @@ export class MailService {
           user: this.config.get<string>('SMTP_USER'),
           pass: this.config.get<string>('SMTP_PASS'),
         },
-      });
+      };
+      this.transporter = nodemailer.createTransport(smtpOptions);
       this.fromAddress = this.config.get<string>('SMTP_FROM') ?? 'no-reply@calender-app.local';
       this.mode = 'smtp';
       this.logger.warn(
@@ -123,19 +136,27 @@ export class MailService {
    * Gửi 1 email. Đây là ĐIỂM DUY NHẤT quyết định tầng vận chuyển — mọi hàm bên dưới đều gọi qua đây,
    * nên toàn bộ tính năng gửi mail dùng chung một đường và không bị lệch hành vi.
    */
-  private async deliver(options: Mail.Options): Promise<void> {
+  private async deliver(options: Mail.Options): Promise<boolean> {
     // AN TOÀN: nếu gửi lỗi (sai SMTP_USER/PASS, sai cấu hình Gmail, mất mạng...) thì CHỈ ghi log,
     // KHÔNG ném lỗi ra ngoài. Nhờ vậy một email hỏng KHÔNG BAO GIỜ làm sập cả server — kể cả khi
     // được gọi kiểu "bắn rồi quên" (void ...) hay trong cron. Endpoint test dùng deliverOrThrow.
     try {
       await this.deliverOrThrow(options);
+      return true;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
+      // Tách LỖI MẠNG khỏi LỖI ĐĂNG NHẬP: trước đây câu nào cũng bảo "kiểm tra
+      // SMTP_USER/SMTP_PASS", nên lỗi không ra được Internet lại bị đi soi mật khẩu.
+      const network = /ENETUNREACH|EHOSTUNREACH|ETIMEDOUT|ECONNREFUSED|EAI_AGAIN|ENOTFOUND/.test(message);
+      const hint = network
+        ? `Máy chủ KHÔNG kết nối được tới ${this.config.get<string>('SMTP_HOST') ?? 'SMTP host'}:${this.config.get<string>('SMTP_PORT') ?? '587'} — vấn đề MẠNG, không phải mật khẩu. Thường do nhà cung cấp chặn cổng SMTP hoặc không có IPv6. Cân nhắc dùng Gmail API (GMAIL_*) hoặc Brevo (BREVO_*) vì cả hai gửi qua HTTPS.`
+        : `Kiểm tra SMTP_USER/SMTP_PASS (App Password Gmail 16 ký tự) hoặc cấu hình GMAIL_* trong .env.`;
       this.logger.error(
         `Gửi email tới "${options.to}" THẤT BẠI (tầng ${this.mode}): ${message}. ` +
-          `Kiểm tra SMTP_USER/SMTP_PASS (App Password Gmail 16 ký tự) hoặc cấu hình GMAIL_* trong .env. ` +
-          `Server vẫn chạy bình thường, chỉ email này không gửi được.`,
+          hint +
+          ` Server vẫn chạy bình thường, chỉ email này không gửi được.`,
       );
+      return false;
     }
   }
 
@@ -233,14 +254,14 @@ export class MailService {
     const noteLine = note ? `<p style="font-size:16px;color:#111827;margin:0 0 8px">📌 ${note}</p>` : '';
     const noteText = note ? `${note}\n` : '';
 
-    await this.deliver({
+    const sent = await this.deliver({
       to: params.to,
       subject: `Nhắc lịch: ${note || title}`,
       text: `${noteText}Sự kiện "${title}" sẽ bắt đầu vào ${timeLabel}${params.location ? ` tại ${params.location}` : ''}.`,
       html: `${noteLine}<p>Sự kiện <strong>${title}</strong> sẽ bắt đầu vào <strong>${timeLabel}</strong>${locationLine}.</p>`,
     });
 
-    this.logger.log(`Đã gửi email nhắc lịch tới ${params.to} — sự kiện "${title}"`);
+    if (sent) this.logger.log(`Đã gửi email nhắc lịch tới ${params.to} — sự kiện "${title}"`);
   }
 
   /** Báo cho khách rằng tài liệu đính kèm của sự kiện đã tới giờ xem được. */
@@ -259,7 +280,7 @@ export class MailService {
       });
       untilLine = ` (xem được đến <strong>${until}</strong>)`;
     }
-    await this.deliver({
+    const sent = await this.deliver({
       to: params.to,
       subject: `Tài liệu đã mở: ${title}`,
       text: `Tài liệu "${params.fileName}" của sự kiện "${title}" đã có thể xem/tải.${
@@ -267,7 +288,7 @@ export class MailService {
       }`,
       html: `<p>Tài liệu <strong>${params.fileName}</strong> của sự kiện <strong>${title}</strong> đã có thể xem/tải${untilLine}.</p>`,
     });
-    this.logger.log(`Đã gửi email "tài liệu đã mở" tới ${params.to} — "${params.fileName}"`);
+    if (sent) this.logger.log(`Đã gửi email "tài liệu đã mở" tới ${params.to} — "${params.fileName}"`);
   }
 
   /** Gửi email MỜI tham gia event, kèm 2 nút Đồng ý/Từ chối bấm ngay trong mail (không cần đăng nhập). */
@@ -284,7 +305,7 @@ export class MailService {
       ? `<tr><td style="padding:6px 0;color:#374151;font-size:14px">📍&nbsp;&nbsp;${params.location}</td></tr>`
       : '';
 
-    await this.deliver({
+    const sent = await this.deliver({
       to: params.to,
       subject: `Lời mời tham gia: ${params.eventTitle}`,
       text: `Bạn được mời tham gia "${params.eventTitle}" vào ${timeLabel}.\nĐồng ý: ${params.acceptUrl}\nTừ chối: ${params.declineUrl}`,
@@ -323,7 +344,7 @@ export class MailService {
       `,
     });
 
-    this.logger.log(`Đã gửi email mời tới ${params.to} — sự kiện "${params.eventTitle}"`);
+    if (sent) this.logger.log(`Đã gửi email mời tới ${params.to} — sự kiện "${params.eventTitle}"`);
   }
 
   /** Email báo được người khác CHIA SẺ LỊCH cho mình. */
@@ -335,7 +356,7 @@ export class MailService {
            <tr><td><a href="${appUrl}" style="display:block;text-align:center;padding:12px 0;border-radius:8px;background:#1d4ed8;color:#ffffff;text-decoration:none;font-weight:600;font-size:15px">Mở lịch</a></td></tr>
          </table>`
       : '';
-    await this.deliver({
+    const sent = await this.deliver({
       to: params.to,
       subject: `${params.ownerEmail} đã chia sẻ lịch với bạn`,
       text: `${params.ownerEmail} vừa chia sẻ lịch của họ với bạn (quyền: ${roleLabel}). Đăng nhập để xem.${appUrl ? `\n${appUrl}` : ''}`,
@@ -358,7 +379,7 @@ export class MailService {
       </div>
       `,
     });
-    this.logger.log(`Đã gửi email chia sẻ lịch tới ${params.to} (chủ: ${params.ownerEmail})`);
+    if (sent) this.logger.log(`Đã gửi email chia sẻ lịch tới ${params.to} (chủ: ${params.ownerEmail})`);
   }
 
   /**
@@ -375,7 +396,7 @@ export class MailService {
            <tr><td><a href="${appUrl}" style="display:block;text-align:center;padding:12px 0;border-radius:8px;background:#1d4ed8;color:#ffffff;text-decoration:none;font-weight:600;font-size:15px">Mở lịch để phản hồi</a></td></tr>
          </table>`
       : '';
-    await this.deliver({
+    const sent = await this.deliver({
       to: params.to,
       subject: `${params.inviterEmail} mời bạn vào nhóm "${params.groupName}"`,
       text: `${params.inviterEmail} vừa mời bạn vào nhóm "${params.groupName}". Đăng nhập bằng chính email này rồi bấm Đồng ý ở chuông thông báo.${appUrl ? `
@@ -399,13 +420,13 @@ ${appUrl}` : ''}`,
       </div>
       `,
     });
-    this.logger.log(`Đã gửi email mời nhóm "${params.groupName}" tới ${params.to}`);
+    if (sent) this.logger.log(`Đã gửi email mời nhóm "${params.groupName}" tới ${params.to}`);
   }
 
   /** Email báo được CẤP quyền CHỈNH SỬA một sự kiện. */
   async sendEventEditorGranted(params: { to: string; eventTitle: string; startTime: string }): Promise<void> {
     const timeLabel = this.formatTime(params.startTime);
-    await this.deliver({
+    const sent = await this.deliver({
       to: params.to,
       subject: `Bạn được cấp quyền chỉnh sửa: ${params.eventTitle}`,
       text: `Bạn vừa được cấp quyền CHỈNH SỬA sự kiện "${params.eventTitle}" (${timeLabel}). Bạn có thể sửa tiêu đề, địa điểm, mô tả của sự kiện.`,
@@ -427,44 +448,44 @@ ${appUrl}` : ''}`,
       </div>
       `,
     });
-    this.logger.log(`Đã gửi email cấp quyền chỉnh sửa tới ${params.to} — "${params.eventTitle}"`);
+    if (sent) this.logger.log(`Đã gửi email cấp quyền chỉnh sửa tới ${params.to} — "${params.eventTitle}"`);
   }
 
   /** Email báo sự kiện được CẬP NHẬT (đổi giờ/tiêu đề/địa điểm) tới khách mời. */
   async sendEventUpdated(params: ReminderEmailParams): Promise<void> {
     const timeLabel = this.formatTime(params.startTime);
     const loc = params.location ? ` tại <strong>${params.location}</strong>` : '';
-    await this.deliver({
+    const sent = await this.deliver({
       to: params.to,
       subject: `Cập nhật sự kiện: ${params.eventTitle}`,
       text: `Sự kiện "${params.eventTitle}" vừa được cập nhật. Thời gian: ${timeLabel}${params.location ? ` tại ${params.location}` : ''}.`,
       html: `<p>Sự kiện <strong>${params.eventTitle}</strong> vừa được cập nhật.</p><p>Thời gian mới: <strong>${timeLabel}</strong>${loc}.</p>`,
     });
-    this.logger.log(`Đã gửi email cập nhật tới ${params.to} — "${params.eventTitle}"`);
+    if (sent) this.logger.log(`Đã gửi email cập nhật tới ${params.to} — "${params.eventTitle}"`);
   }
 
   /** Email báo sự kiện bị HUỶ tới khách mời. */
   async sendEventCancelled(params: ReminderEmailParams): Promise<void> {
     const timeLabel = this.formatTime(params.startTime);
-    await this.deliver({
+    const sent = await this.deliver({
       to: params.to,
       subject: `Huỷ sự kiện: ${params.eventTitle}`,
       text: `Sự kiện "${params.eventTitle}" (${timeLabel}) đã bị huỷ.`,
       html: `<p>Sự kiện <strong>${params.eventTitle}</strong> (${timeLabel}) đã bị <strong>huỷ</strong>.</p>`,
     });
-    this.logger.log(`Đã gửi email huỷ tới ${params.to} — "${params.eventTitle}"`);
+    if (sent) this.logger.log(`Đã gửi email huỷ tới ${params.to} — "${params.eventTitle}"`);
   }
 
   /** Xác nhận đặt lịch cho người vừa đặt. */
   async sendBookingConfirmation(params: ReminderEmailParams): Promise<void> {
     const timeLabel = this.formatTime(params.startTime);
-    await this.deliver({
+    const sent = await this.deliver({
       to: params.to,
       subject: `Xác nhận đặt lịch: ${params.eventTitle}`,
       text: `Bạn đã đặt lịch "${params.eventTitle}" vào ${timeLabel}. Hẹn gặp bạn!`,
       html: `<p>Bạn đã đặt lịch <strong>${params.eventTitle}</strong> vào <strong>${timeLabel}</strong>.</p><p>Hẹn gặp bạn!</p>`,
     });
-    this.logger.log(`Đã gửi xác nhận đặt lịch tới ${params.to}`);
+    if (sent) this.logger.log(`Đã gửi xác nhận đặt lịch tới ${params.to}`);
   }
 
   /** Báo cho CHỦ trang khi có người đặt lịch mới. */
@@ -476,7 +497,7 @@ ${appUrl}` : ''}`,
     startTime: string;
   }): Promise<void> {
     const timeLabel = this.formatTime(params.startTime);
-    await this.deliver({
+    const sent = await this.deliver({
       to: params.to,
       subject: `Đặt lịch mới: ${params.inviteeName}`,
       text: `${params.inviteeName} (${params.inviteeEmail}) vừa đặt "${params.eventTitle}" vào ${timeLabel}.`,
