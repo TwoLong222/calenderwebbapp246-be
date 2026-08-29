@@ -21,6 +21,7 @@ import {
 class EmailPreferencesDto {
   @IsOptional() @IsBoolean() event_reminder?: boolean;
   @IsOptional() @IsBoolean() event_invitation?: boolean;
+  @IsOptional() @IsBoolean() group_invitation?: boolean;
   @IsOptional() @IsBoolean() rsvp_update?: boolean;
   @IsOptional() @IsBoolean() event_updated?: boolean;
   @IsOptional() @IsBoolean() event_cancelled?: boolean;

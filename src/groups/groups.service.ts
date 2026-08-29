@@ -3,15 +3,23 @@
 // Lưu ý bảo mật: chủ yếu dùng quyền của chính người dùng để tuân luật bảo mật (RLS);
 // chỉ vài thao tác đặc biệt mới dùng quyền admin, và có tự kiểm tra quyền trước khi ghi.
 
-import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { SupabaseService } from '../supabase/supabase.service';
+import { MailService } from '../mail/mail.service';
+import { SettingsService } from '../settings/settings.service';
 import { CreateGroupEventDto, UpdateGroupEventDto } from './dto/group-event.dto';
 import { SendMessageDto } from './dto/send-message.dto';
 
 @Injectable()
 export class GroupsService {
-  constructor(private readonly supabaseService: SupabaseService) {}
+  private readonly logger = new Logger(GroupsService.name);
+
+  constructor(
+    private readonly supabaseService: SupabaseService,
+    private readonly mail: MailService,
+    private readonly settings: SettingsService,
+  ) {}
 
   private get admin(): SupabaseClient {
     return this.supabaseService.adminClient;
@@ -127,7 +135,29 @@ export class GroupsService {
         { onConflict: 'group_id,email', ignoreDuplicates: true },
       );
     if (error) throw error;
+
+    // Gửi mail báo cho người được mời. Bọc try/catch và KHÔNG await kết quả vào phản hồi:
+    // lời mời đã ghi vào database rồi, mail hỏng thì không được làm hỏng cả thao tác mời.
+    void this.notifyInvite(normalized, groupId, userId);
     return { ok: true, email: normalized };
+  }
+
+  /** Gửi email "bạn được mời vào nhóm X". Lỗi chỉ ghi log, không ném ra ngoài. */
+  private async notifyInvite(email: string, groupId: string, inviterId: string): Promise<void> {
+    try {
+      // Người nhận đã tắt nhận mail lời mời nhóm -> tôn trọng, không gửi.
+      if (!(await this.settings.isEmailEnabledForEmail(email, 'group_invitation'))) return;
+
+      const { data: group } = await this.admin.from('groups').select('name').eq('id', groupId).maybeSingle();
+      const { data: inviter } = await this.admin.auth.admin.getUserById(inviterId);
+      await this.mail.sendGroupInvite({
+        to: email,
+        groupName: group?.name ?? 'Nhóm',
+        inviterEmail: inviter?.user?.email ?? '',
+      });
+    } catch (e) {
+      this.logger.error(`Gửi email mời nhóm tới ${email} thất bại`, e as Error);
+    }
   }
 
   /** Tham gia nhóm bằng mã: gán user hiện tại vào nhóm. */

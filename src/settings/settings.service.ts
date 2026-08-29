@@ -40,6 +40,7 @@ const DEFAULTS = {
   email_preferences: {
     event_reminder: true,
     event_invitation: true,
+    group_invitation: true,
     rsvp_update: true,
     event_updated: true,
     event_cancelled: true,

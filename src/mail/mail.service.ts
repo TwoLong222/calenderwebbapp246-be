@@ -361,6 +361,47 @@ export class MailService {
     this.logger.log(`Đã gửi email chia sẻ lịch tới ${params.to} (chủ: ${params.ownerEmail})`);
   }
 
+  /**
+   * Email báo được MỜI VÀO NHÓM. Trước đây mời nhóm chỉ ghi 1 dòng vào group_members,
+   * không gửi mail gì — người được mời không mở web thì không hề biết.
+   *
+   * Không kèm nút Đồng ý/Từ chối như lời mời SỰ KIỆN: vào nhóm cần đăng nhập để thấy
+   * lịch và khung chat của nhóm, nên chỉ dẫn họ mở app rồi bấm Đồng ý ở chuông.
+   */
+  async sendGroupInvite(params: { to: string; groupName: string; inviterEmail: string }): Promise<void> {
+    const appUrl = (process.env.CORS_ORIGIN || '').split(',')[0].trim();
+    const openBtn = appUrl
+      ? `<table role="presentation" cellpadding="0" cellspacing="0" style="width:100%;margin-top:8px">
+           <tr><td><a href="${appUrl}" style="display:block;text-align:center;padding:12px 0;border-radius:8px;background:#1d4ed8;color:#ffffff;text-decoration:none;font-weight:600;font-size:15px">Mở lịch để phản hồi</a></td></tr>
+         </table>`
+      : '';
+    await this.deliver({
+      to: params.to,
+      subject: `${params.inviterEmail} mời bạn vào nhóm "${params.groupName}"`,
+      text: `${params.inviterEmail} vừa mời bạn vào nhóm "${params.groupName}". Đăng nhập bằng chính email này rồi bấm Đồng ý ở chuông thông báo.${appUrl ? `
+${appUrl}` : ''}`,
+      html: `
+      <div style="background:#f3f4f6;padding:24px 0;font-family:'Segoe UI',Roboto,Helvetica,Arial,sans-serif">
+        <div style="max-width:480px;margin:0 auto">
+          <div style="background:#0f766e;border-radius:12px 12px 0 0;padding:16px 28px">
+            <span style="color:#ffffff;font-size:16px;font-weight:600;letter-spacing:.2px">👥 Lời mời vào nhóm</span>
+          </div>
+          <div style="background:#ffffff;border:1px solid #e5e7eb;border-top:none;border-radius:0 0 12px 12px;padding:28px">
+            <p style="margin:0 0 6px;color:#6b7280;font-size:13px">Bạn được mời vào một nhóm</p>
+            <h1 style="margin:0 0 18px;font-size:20px;line-height:1.35;color:#111827">${params.groupName}</h1>
+            <table role="presentation" cellpadding="0" cellspacing="0" style="width:100%;background:#f9fafb;border-radius:10px;padding:6px 16px;margin-bottom:6px">
+              <tr><td style="padding:6px 0;color:#374151;font-size:14px">✉️&nbsp;&nbsp;Người mời: <strong>${params.inviterEmail}</strong></td></tr>
+            </table>
+            ${openBtn}
+            <p style="margin:20px 0 0;color:#9ca3af;font-size:12px;line-height:1.5">Đăng nhập bằng chính email này, lời mời sẽ hiện ở chuông thông báo để bạn bấm Đồng ý hoặc Từ chối.</p>
+          </div>
+        </div>
+      </div>
+      `,
+    });
+    this.logger.log(`Đã gửi email mời nhóm "${params.groupName}" tới ${params.to}`);
+  }
+
   /** Email báo được CẤP quyền CHỈNH SỬA một sự kiện. */
   async sendEventEditorGranted(params: { to: string; eventTitle: string; startTime: string }): Promise<void> {
     const timeLabel = this.formatTime(params.startTime);
